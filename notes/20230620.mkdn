@@ -1,0 +1,497 @@
+Alrighty. I am going to attempt to manually perform the steps a debugger would
+perform if I walked up to my keypad scanner PCB and asked it what's up.
+
+debugdb can parse the firmware, which is a great start
+
+We're now haltedin the idle loop, which is the best place to halt (all futures
+are sleeping).
+
+First, we need to find the list of futures. I just added a static for this in
+lilos.
+
+```
+>> var lilos::exec::TASK_FUTURES
+lilos::exec::TASK_FUTURES @ <.debug_info+0x00015c32>
+- type: core::option::Option<*mut [core::pin::Pin<*mut dyn core::future::future::Future<Output=core::convert::Infallible>>]> <.debug_info+0x000171b2>
+- address: 0x20000600
+```
+
+That Option is (according to dwarf) a non-clever Option: first word's the
+discriminator, 0 means None, 1 means Some. Easy. It is 3 words in length. What
+are the three words at that address?
+
+    0x20000600: 00000001 20001fd4 00000002 
+
+So, we have Some, and two words. The raw-slice type says it consists of a data
+pointer, and a length. That tracks. So our data pointer is 0x20001fd4 and our
+length is 2.
+
+The type of the pointed-to data: this mouthful:
+
+    core::pin::Pin<*mut dyn core::future::future::Future<Output=core::convert::Infallible>>
+
+Types longer than 80 characters! I feel like I'm a young C++ programmer again!
+
+Each of those Pins contains just a pointer, which is a `*mut dyn yadda`, which
+has the representation...
+
+```
+         0      1      2      3   
+     +------+------+------+------+
+0000 |  0                        |
+     +------+------+------+------+
+0004 |  1                        |
+     +------+------+------+------+
+     where:
+       0 = pointer: *_ dyn core::future::future::Future<Output=core::convert::Infallible> <.debug_info+0x00017c06>
+       1 = vtable: &[usize; 3] <.debug_info+0x00017c16>
+```
+
+So, in our slice in memory, we should expect to find 2x 8-byte thingies, each of
+which contains a data pointer and a vtable pointer. Let's see what's out there!
+
+    0x20001fd4: 20001da0 08003c40 20001f40 08003c50 
+
+Yup, that's a RAM pointer, Flash pointer, repeat. Tracks so far.
+
+We need to learn the concrete type of these though. We can do that by querying
+the debugdb for those vtable pointers.
+
+```
+>> addr 0x08003c40
+Offset +0x0 into static <keybad_fw::serial::task::{async_fn_env#0} as core::future::future::Future>::{vtable}
+- range 0x8003c40..0x8003c50
+- type <keybad_fw::serial::task::{async_fn_env#0} as core::future::future::Future>::{vtable_type} <.debug_info+0x0001296e>
+  - .drop_in_place +0x0 (in <keybad_fw::serial::task::{async_fn_env#0} as core::future::future::Future>::{vtable_type})
+
+>> addr 0x08003c50
+Offset +0x0 into static <keybad_fw::scanner::task::{async_fn_env#0} as core::future::future::Future>::{vtable}
+- range 0x8003c50..0x8003c60
+- type <keybad_fw::scanner::task::{async_fn_env#0} as core::future::future::Future>::{vtable_type} <.debug_info+0x00012d2f>
+  - .drop_in_place +0x0 (in <keybad_fw::scanner::task::{async_fn_env#0} as core::future::future::Future>::{vtable_type})
+```
+
+There's no DWARF metadata to link these to async fns, but we can apply
+heuristics. Let's consider just the first one.
+
+Name: 
+`<keybad_fw::serial::task::{async_fn_env#0} as core::future::future::Future>::{vtable}`
+
+- this is a vtable
+- it is a vtable for the trait core::future::future::future::future::etc
+- it is a vtable for a type known as `.....{async_fn_env#0}`
+    - and in fact the DWARF has a `containing_type` link that debugdb currently
+      ignores
+
+We have learned the type of the data pointer then: it's the `containing_type`
+for the vtable (or, the type named in the vtable type name). It is:
+
+    keybad_fw::serial::task::{async_fn_env#0} <.debug_info+0x0000732f>: enum type
+
+Neat! So we believe we have one of those at 0x20001da0. It's a 416-byte type
+(whew!). Here's a dump.
+
+```
+0x20001da0: 08007000 08007800 20001fe4 20000628 20001d7c 20001fe4 20001fe4 20000628 
+0x20001dc0: 20001d7c 20001d94 04002100 7ffe0500 20001db0 20001d90 20001db0 079d5e03 
+                   disc  -----^^
+0x20001de0: 5a1825c7 20001dd0 00000001 20001fe4 20001fe4 9a7701b3 6900e1e1 db1a5094 
+0x20001e00: 2320b1f4 5139c930 920c9dd7 f40d913d 114c4f47 8f9798b0 8733d9ee 7f250206 
+0x20001e20: 0761feb6 18d34ae7 e13fc6b5 7f219de9 4dc4d4df 1b8ccc0a aba66abb ffbf1e1e 
+0x20001e40: aa189cfc 33f7584b 0003f384 e2b88c52 6482c792 e5997051 32102c4c 3244226b 
+0x20001e60: 4c30d9f7 7ff3729e 1a9ef6fc 94bfe603 e59693d1 bfb770bb 5d529ff9 4f8d46e5 
+0x20001e80: e9567efb 3ef7f599 6d76d271 eefb0143 efdbd33a 91fd63fa 9fa5bddf eeb13a2a 
+0x20001ea0: 24814a84 a3dda1d8 8b24f8ef 148b051f 45957af0 3e494cdd 102cd475 7ce006ca 
+0x20001ec0: d207d7a9 cdfd9818 362f7fc7 5153b33b 21b045a6 93bf29ea 0e508b76 b6cb4bf7 
+0x20001ee0: 62a1da2b 174d07c7 d486d5ed fd070206 088247b3 ce943444 c1035fda bc364203 
+0x20001f00: 3660e99d 173c3a81 2c407729 d59ecca0 634c9a74 d1af412e 2184e477 5be5083e 
+0x20001f20: 079afffc fdf7de21 0bd1bff9 c9fd6271 56fafb34 b4334d61 36c1aef5 7d7da2b7
+```
+
+tysh reports that type should have a discriminator at offset 43 (decimal, 0x2b).
+I've marked it above.
+
+Discriminator value 4 means that we have the Suspend1 type,
+
+    keybad_fw::serial::task::{async_fn_env#0}::Suspend1 <.debug_info+0x0000750b>
+
+```
+08007000 - storage: keybad_fw::flash::Storage
+08007800 /
+20001fe4 - uart: &stm32g0::stm32g030::USART1
+20000628 - keymap: &[[u8; 8]; 8]
+20001d7c - from_scanner: lilos::spsc::Pop<KeyEvent>
+20001fe4  (unused)
+20001fe4 - gpioa: &stm32g0::stm32g030::GPIOA
+20000628  (unused)
+20001d7c (unused)
+20001d94 - config_to_scanner: lilos::handoff::Push<Config>
+04002100 (unused)
+7ffe0500 - lower byte only = setup_mode: bool
+20001db0 - __awaitee: lilos::spsc::{impl#4}::pop::{async_fn_env#0} <.debug_info+0x0000e16e>
+20001d90  |
+20001db0  |
+079d5e03 /
+    (rest is currently unused)
+```
+
+Cool cool. Suspend1 you say. What can I tell the user about Suspend1?
+
+Well, debugdb doesn't really parse this great, but over in dwarfdump I note that
+the variant member for discriminator 4 in our async-fn-env has decl file
+coordinates. Specifically,
+
+    src/serial.rs:35
+
+That is a line reading
+
+            let event = from_scanner.pop().await;
+
+So the first frame in our stack trace could be reasonably labeled
+
+    async fn keybad_fw::serial::task
+        suspend point 1 (serial.rs:35)
+
+Neat. NEXT
+
+How about that `__awaitee`, eh? Repeating its value for ease of interpretation:
+
+```
+20001db0 - __awaitee: lilos::spsc::{impl#4}::pop::{async_fn_env#0} <.debug_info+0x0000e16e>
+20001d90  |
+20001db0  |
+079d5e03 /
+```
+
+That type is another async-fn-env, and has its discriminator in the low byte of
+the last word -- so, it's 3. 3, as usual, means Suspend0.
+
+    lilos::spsc::{impl#4}::pop::{async_fn_env#0}<keybad_fw::scanner::KeyEvent>::Suspend0 <.debug_info+0x0000e203>
+
+dwarfdump shows that that member is "defined" at
+
+    /home/cbiffle/proj/lilos/os/src/spsc.rs:313
+
+so we've got our second stack frame, which reads
+
+    async fn lilos::spsc::{impl#4}::pop<KeyEvent>
+        suspend point 0 (spsc.rs:313)
+
+From the definition of Suspend0 we can interpret those bytes:
+
+```
+20001db0 - __awaitee: futures_util::future::poll_fn::PollFn<lilos::exec::{impl#1}::until::{closure_env#0}<core::option::Option<keybad_fw::scanner::KeyEvent>, lilos::spsc::{impl#4}::pop::{async_fn#0}::{closure_env#0}<keybad_fw::scanner::KeyEvent>>> <.debug_info+0x0000f594>
+20001d90 /
+20001db0  - self: &mut lilos::spsc::Pop<keybad_fw::scanner::KeyEvent> <.debug_info+0x00012806> |
+079d5e03 (unused except discriminator, which is 3)
+```
+
+So we've got a local we could print there, which is nice.
+
+NEXT
+
+The next awaitee is not an async fn! It is an explicitly implemented future.
+Because it comes from `futures_util`, I think it's reasonable to expect that a
+debugger might special case it. It would be very nice to say _which_ fn is being
+polled.
+
+There's not a lot to go on in the metadata. Suffice to say, the `PollFn` future
+wraps a single member, `f`, of a function type. In this case, it's a closure.
+
+    lilos::exec::{impl#1}::until::{closure_env#0}<core::option::Option<keybad_fw::scanner::KeyEvent>, lilos::spsc::{impl#4}::pop::{async_fn#0}::{closure_env#0}<keybad_fw::scanner::KeyEvent>> <.debug_info+0x0000c6a3>
+
+Decoding it as a struct, we get two fields, `cond` and `self`. So we can sort of
+decode it:
+
+```
+20001db0 cond: lilos::spsc::{impl#4}::pop::{async_fn#0}::{closure_env#0}<keybad_fw::scanner::KeyEvent> <.debug_info+0x0000e227>
+20001d90 self: &lilos::exec::Notify <.debug_info+0x0001279a>
+```
+
+Following cond, we wind up with a field of type
+
+    &mut lilos::spsc::Pop<keybad_fw::scanner::KeyEvent> <.debug_info+0x00012806>
+
+Frustratingly, there's no decl coords. However, if we parse the type name (ew)
+and recognize that it's a `{closure_env#0}`, we can go hunting for `{closure#0}`
+in the same namespace in the DWARF tree. And it can be found: it's at
+`<.debug_info+0xe23a>` as a subprogram.
+
+So, we can at least give _those_ decl coords, which are:
+
+    /home/cbiffle/proj/lilos/os/src/spsc.rs:313
+
+I would propose printing this frame as something like
+
+    poll_fn of closure in async fn lilos::spsc::{impl#4}::pop
+        defined at lilos/os/src/spsc.rs:313
+
+However, we could also special-case the "until" closure as indicating
+`Notify::until`. It would be FUCKING AMAZING if we could say _what_ Notify we're
+parked at.
+
+20001db0 is the address of a `Pop<KeyEvent>`. That's just a pointer to a queue.
+So we can find the queue, at least. Reading memory...
+
+Queue is at 0x20001d7c
+
+I happen to know this queue is on the stack -- it's above sp and below stack
+base. So now I'm walking the stack trace of main back, manually.
+
+```
+pc=0x080004ee
+fp=r7+8=0x20001cd8
+caller LR = 0x0800039d
+caller FP = 0x20001cd8
+
+pc=0x08000398, probably
+CFA = r7+8 = 0x20001ce0
+caller LR = 0x0800040d
+caller r7 = 0x20001d18
+
+pc=0x08000408, probably
+CFA = r7+8 = 0x20001d20
+caller LR = 0x080003c1
+caller r7 = 0x20001d20
+
+pc = 0x080003bc, probably
+CFA = r7 + 8 = 0x20001d28
+caller LR = 0x08001e97
+caller r7 = 0x20001ff0
+
+pc = 0x08001e92, probably (we are now in main
+CFA = r7+8 = 0x20001ff8
+caller LR = 0x08001cd5
+caller r7 = 0x20001ff8
+caller r6 = 0xffffffff
+caller r4 = 0xffffffff
+```
+
+In main, at 84 above the stack pointer of 0x20001d28, we find the
+`scan_event_to_serial` variable, which is a lilos queue. If I were an OS-aware
+debugger, I would describe this as
+
+    waiting to pop from spsc queue: scan_event_to_serial
+        defined at: src/main.rs:160
+---
+
+So, for this future, from innermost to outermost, we could display this stack
+trace using information readily available in the binary:
+
+```
+await stack for future at 0x20001da0:
+    waiting to pop from spsc queue: scan_event_to_serial
+        defined at: src/main.rs:160
+    0x20001dd0 async fn lilos::spsc::{impl#4}::pop<KeyEvent>
+        suspend point 0: lilos/os/src/spsc.rs:313
+    0x20001da0 async fn keybad_fw::serial::task
+        suspend point 1: src/serial.rs:35
+```
+
+Cool.
+
+Now the other one!
+
+---
+
+It's at 0x20001f40 and its type is
+
+    keybad_fw::scanner::task::{async_fn_env#0} <.debug_info+0x00009a9a>: enum type
+
+Here are its contents from the debugger:
+
+```
+0x20001f40: 00000001 00000000 0000d29e 00000000 20001d94 20001fe4 20001d7c 20000000 
+0x20001f60: 20001d94 20001fe4 20001d7c ef97eb95 ffffff9f eb951f00 ff9fef97 1f00ffff 
+0x20001f80: d9a7af03 a79fecb6 0000d29e 00000000 0000d29e 00000000 00000002 08003f7c 
+         disc-----^^
+0x20001fa0: 0000d29e 00000000 20001ce8 20001ce8 20001f98 00000100 20001f98 f1010003 
+0x20001fc0: 20001f40 20001f40 b1e0ed03 d966cd2b
+```
+
+It has a discriminator at offset 0x40, marked above. The discriminator is 3,
+which, as usual, means Suspend0.
+
+This gives us decl coords:
+
+    keybad/fw/src/scanner.rs:134
+
+and an interpretation for those bytes:
+
+```
+00000001 - scan_gate: lilos::exec::PeriodicGate
+00000000  |
+0000d29e  |
+00000000 /
+20001d94 - config_update: lilos::handoff::Pop<Config>
+20001fe4 - gpio: &stm32g0::stm32g030::GPIOA
+20001d7c - out_queue: lilos::spsc::Push<KeyEvent>
+20000000 - debouncers: &mut [[Debounce; 8]; 8]
+20001d94 (unused)
+20001fe4 (unused)
+20001d7c (unused)
+ef97eb95 (unused)
+ffffff9f low half unused, top two bytes start Config struct
+eb951f00 more config
+ff9fef97 more config
+1f00ffff (more config)
+d9a7af03 (unused)
+a79fecb6 (unused)
+0000d29e - __awaitee: lilos::exec::{impl#6}::next_time::{async_fn_env#0} <.debug_info+0x0000d213>
+00000000  |
+0000d29e  |
+00000000  |
+00000002  |
+08003f7c  |
+0000d29e  |
+00000000  |
+20001ce8  |
+20001ce8  |
+20001f98  |
+00000100  |
+20001f98  |
+f1010003  |
+20001f40  |
+20001f40  |
+b1e0ed03  |
+d966cd2b /
+```
+
+Goodness, that's a large awaitee. Let's describe our frame and move down.
+
+```
+    0x20001f40 async fn keybad_fw::scanner::task
+        suspend point 0: src/scanner.rs:134
+```
+
+Next has the contents below, with a discriminator of 3, meaning Suspend0. Its
+decl coords are
+
+    lilos/os/src/exec.rs:965
+
+```
+0000d29e __awaitee: lilos::exec::sleep_until::{async_fn_env#0} <.debug_info+0x0000c842>
+00000000 |
+0000d29e |
+00000000 |
+00000002 |
+08003f7c |
+0000d29e |
+00000000 |
+20001ce8 |
+20001ce8 |
+20001f98 |
+00000100 |
+20001f98 |
+f1010003 /
+20001f40 self: &mut lilos::exec::PeriodicGate <.debug_info+0x00012d74>
+20001f40 (unused)
+b1e0ed03 <-- disc, otherwise unused
+d966cd2b (unused)
+```
+
+Not much going on here.
+
+```
+    0x20001f88 async fn lilos::exec::{impl#6}::next_time
+        suspend point 0: lilos/os/src/exec.rs:965
+```
+
+
+Next:
+
+```
+0000d29e (unused)
+00000000 (unused)
+0000d29e deadline: lilos::time::TickTime
+00000000 /
+00000002 __2: lilos::list::Node<lilos::time::TickTime>
+08003f7c |
+0000d29e |
+00000000 |
+20001ce8 |
+20001ce8 /
+20001f98 __awaitee: lilos::list::WaitForDetach<lilos::time::TickTime, lilos::list::{impl#5}::insert_and_wait::{closure_env#0}<lilos::time::TickTime>> <.debug_info+0x0000e7a4>
+00000100 /
+20001f98 node: core::pin::Pin<&mut lilos::list::Node<lilos::time::TickTime>> <.debug_info+0x00001c74>
+f1010003 <-- disc
+```
+
+decl coords: lilos/os/src/exec.rs:815
+
+Frame:
+
+```
+    0x20001f88 async fn lilos::exec::sleep_until
+        suspend point 0: lilos/os/src/exec.rs:815
+```
+
+Next:
+
+The next future is not an async fn, it's the lilos WaitForDetach. If I were
+writing a lilos-aware debugger, I would special-case it. What's inside it?
+
+- pointer to the node
+- flag recording whether we've been polled to notice detach
+- cleanup function
+
+oooooh we can say _what list we're on._
+
+The node pointer is 0x20001f98. LET'S FOLLOW THE LIST
+
+- We are sleeping until time 0xd29e. It is currently 0xd29d.
+- prev is 20001ce8
+- This node has a 0 timestamp and a bogus waker. It is likely in a list.
+
+Sure enough, `lilos::exec::TIMER_LIST` contains `0x20001ce8`.
+
+I would probably just describe this as:
+
+```
+    0x20001fb0 lilos::list::insert_and_wait
+        waiting for time 0xd29e (1 tick left)
+        behind 0 other waiters
+```
+
+Okay! Stacky tracey:
+
+```
+await stack for future at 0x20001f40
+    0x20001fb0 waiting for time 0xd29e (1 tick left)
+        behind 0 other waiters
+    0x20001f88 async fn lilos::exec::sleep_until
+        suspend point 0: lilos/os/src/exec.rs:815
+    0x20001f88 async fn lilos::exec::{impl#6}::next_time
+        suspend point 0: lilos/os/src/exec.rs:965
+    0x20001f40 async fn keybad_fw::scanner::task
+        suspend point 0: src/scanner.rs:134
+```
+
+I've saved the memory image, here are the registers if I want to try to do
+something with those:
+
+```
+(0) r0 (/32): 0x00000008
+(1) r1 (/32): 0x50000418
+(2) r2 (/32): 0x08003f7c
+(3) r3 (/32): 0x20001fb4
+(4) r4 (/32): 0x2000060c
+(5) r5 (/32): 0x00000000
+(6) r6 (/32): 0x20001fe4
+(7) r7 (/32): 0x20001cd0
+(8) r8 (/32): 0xffffffff
+(9) r9 (/32): 0xffffffff
+(10) r10 (/32): 0xffffffff
+(11) r11 (/32): 0xffffffff
+(12) r12 (/32): 0xffffffff
+(13) sp (/32): 0x20001cb0
+(14) lr (/32): 0x080004cf
+(15) pc (/32): 0x080004ee
+(16) xPSR (/32): 0x01000000
+(17) msp (/32): 0x20001cb0
+(18) psp (/32): 0xfffffffc
+(20) primask (/1): 0x01
+(21) basepri (/8): 0x00
+(22) faultmask (/1): 0x00
+(23) control (/3): 0x00
+```

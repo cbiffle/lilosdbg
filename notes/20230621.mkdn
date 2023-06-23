@@ -1,0 +1,147 @@
+# Redux!
+
+I have built more tools now. Let's use them.
+
+List of futures:
+
+```
+>> var lilos::exec::TASK_FUTURES
+lilos::exec::TASK_FUTURES @ <.debug_info+0x00015c32>
+- type: core::option::Option<*mut [core::pin::Pin<*mut dyn core::future::future::Future<Output=core::convert::Infallible>>]> <.debug_info+0x000171b2>
+- address: 0x20000600
+
+>> decode core::option::Option<*mut [core::pin::Pin<*mut dyn core::future::future::Future<Output=core::convert::Infallible>>]>
+Paste hex-encoded memory blob. Whitespace OK.
+Address prefix ending in colon will be removed.
+Enter a blank line to end.
+0x20000600: 01 00 00 00 d4 1f 00 20 02 00 00 00 
+
+core::option::Option<*mut [core::pin::Pin<*mut dyn core::future::future::Future<Output=core::convert::Infallible>>]> <.debug_info+0x000171b2>: 
+core::option::Option<*mut [core::pin::Pin<*mut dyn core::future::future::Future<Output=core::convert::Infallible>>]>::Some(*mut [core::pin::Pin<*mut dyn core::future::future::Future<Output=core::convert::Infallible>>] {
+    data_ptr: 0x20001fd4 as *_ core::pin::Pin<*mut dyn core::future::future::Future<Output=core::convert::Infallible>>,
+    length: 2_u32,
+})
+```
+
+Gross! Cleaned up a bit and we get:
+
+```
+Option<*mut [Pin<*mut dyn Future<Output=Infallible>>]>::Some(*mut [Pin<*mut dyn Future<Output=Infallible>>] {
+    data_ptr: 0x20001fd4 as *_ Pin<*mut dyn Future<Output=Infallible>>,
+    length: 2_u32,
+})
+```
+
+So we need to decode a 2-array of those pin thingies at 0x20001fd4.
+Unfortunately tysh can't look up array types. We'll have to do each element
+manually. (I'm now cleaning up the long qualified type names in the output
+manually each time.)
+
+```
+>> decode core::pin::Pin<*mut dyn core::future::future::Future<Output=core::convert::Infallible>>
+Paste hex-encoded memory blob. Whitespace OK.
+Address prefix ending in colon will be removed.
+Enter a blank line to end.
+0x20001fd4: a0 1d 00 20 40 3c 00 08 
+
+core::pin::Pin<*mut dyn core::future::future::Future<Output=core::convert::Infallible>> <.debug_info+0x00001fef>: 
+Pin<*mut dyn Future<Output=Infallible>> {
+    pointer: 0x20001da0 as &mut keybad_fw::serial::task::{async_fn_env#0} as &mut dyn Future,
+}
+
+>> decode core::pin::Pin<*mut dyn core::future::future::Future<Output=core::convert::Infallible>>
+Paste hex-encoded memory blob. Whitespace OK.
+Address prefix ending in colon will be removed.
+Enter a blank line to end.
+0x20001fdc: 40 1f 00 20 50 3c 00 08 
+
+core::pin::Pin<*mut dyn core::future::future::Future<Output=core::convert::Infallible>> <.debug_info+0x00001fef>: 
+Pin<*mut dyn Future<Output=Infallible>> {
+    pointer: 0x20001f40 as &mut keybad_fw::scanner::task::{async_fn_env#0} as &mut dyn Future,
+}
+```
+
+Let's print the first one.
+
+```
+>> sizeof keybad_fw::serial::task::{async_fn_env#0}
+keybad_fw::serial::task::{async_fn_env#0} <.debug_info+0x0000732f>: 416 bytes
+
+>> decode keybad_fw::serial::task::{async_fn_env#0}
+Paste hex-encoded memory blob. Whitespace OK.
+Address prefix ending in colon will be removed.
+Enter a blank line to end.
+0x20001da0: 00 70 00 08 00 78 00 08 e4 1f 00 20 28 06 00 20 7c 1d 00 20 e4 1f 00 20 e4 1f 00 20 28 06 00 20 
+0x20001dc0: 7c 1d 00 20 94 1d 00 20 b7 ef 14 04 00 05 fe 7f b0 1d 00 20 90 1d 00 20 b0 1d 00 20 03 5e 99 03 
+0x20001de0: c7 25 18 5a 14 c8 84 f6 89 4e 39 1b c0 4d e8 de de b1 02 11 28 36 77 9a e1 e1 40 69 96 50 9a db 
+0x20001e00: d4 e1 20 23 11 c9 39 51 d7 9d 8c b2 3d 81 0d f4 47 0f 4c 11 b0 98 9f 8b ea d9 33 87 06 12 25 7d 
+0x20001e20: 96 7f 61 07 a7 62 d3 18 b5 c2 3f c1 e8 1f 21 7f df d4 c4 0d 0b 8c 8c 1b bb 6a a6 af 1e 1e bf ff 
+0x20001e40: fc 9c 08 aa 4b 59 87 33 94 f3 03 00 53 8c b8 e2 9a c7 80 64 58 70 99 e5 0c 2c 10 70 3b 22 04 32 
+0x20001e60: ff f9 30 4c 9e 72 f3 7f fc f6 9e 1a 03 e6 bf 9c d1 93 97 e5 bb f0 b7 bf f9 9f 52 5d e5 4e 8d 47 
+0x20001e80: fb 7e 57 e1 d9 f5 f7 3e 71 da 5c 6d 43 01 fb ce 3a d3 93 ef f2 63 ed 91 df bd a5 9f 2a 3a 11 ee 
+0x20001ea0: 84 4a 80 24 d8 a1 5d a3 ef f8 24 8b 1f 05 8b 54 f0 7a 95 41 dd 4c 48 3e 75 d4 3c 10 ca 06 e8 6d 
+0x20001ec0: e9 f7 07 c2 58 98 fd cd c7 7f 2f 36 3b 93 53 50 a6 45 b0 21 ea 29 3f 93 76 9b 50 0e f7 4a cb b6 
+0x20001ee0: ab da a1 42 c7 0f 4d 17 fc d4 86 54 0a 02 07 fd 33 47 82 08 44 34 94 c6 da 5f 03 c1 03 42 36 bc 
+0x20001f00: 9d e9 60 16 81 3a 3c 15 29 77 40 2c a0 cc 9e d5 74 9a 6c 62 2e 41 af d2 77 e4 84 21 3e 00 e5 5b 
+0x20001f20: fc ff 1a 07 01 de f7 fd f9 bf d1 0a 71 62 dd c9 34 fb fa 56 65 4d 33 b4 f5 ae 41 36 b7 a2 7f 7d
+
+keybad_fw::serial::task::{async_fn_env#0} <.debug_info+0x0000732f>: 
+use keybad_fw::flash::Storage as Storage;
+use lilos::NotSyncMarker as NotSyncMarker;
+use stm32g0::stm32g030::FLASH as FLASH;
+keybad_fw::serial::task::{async_fn_env#0}::4 {
+    uart: 0x20001fe4 as &stm32g0::stm32g030::USART1,
+    keymap: 0x20000628 as &[[u8; 8]; 8],
+    from_scanner: lilos::spsc::Pop<keybad_fw::scanner::KeyEvent> {
+        q: 0x20001d7c as &lilos::spsc::Queue<keybad_fw::scanner::KeyEvent>,
+        _marker: NotSyncMarker(core::marker::PhantomData<core::cell::Cell<()>>),
+    },
+    __awaitee: lilos::spsc::{impl#4}::pop::{async_fn_env#0}<keybad_fw::scanner::KeyEvent>::3 {
+        __awaitee: futures_util::future::poll_fn::PollFn<lilos::exec::{impl#1}::until::{closure_env#0}<core::option::Option<keybad_fw::scanner::KeyEvent>, lilos::spsc::{impl#4}::pop::{async_fn#0}::{closure_env#0}<keybad_fw::scanner::KeyEvent>>> {
+            f: lilos::exec::{impl#1}::until::{closure_env#0}<core::option::Option<keybad_fw::scanner::KeyEvent>, lilos::spsc::{impl#4}::pop::{async_fn#0}::{closure_env#0}<keybad_fw::scanner::KeyEvent>> {
+                cond: lilos::spsc::{impl#4}::pop::{async_fn#0}::{closure_env#0}<keybad_fw::scanner::KeyEvent> {
+                    self: 0x20001db0 as &mut lilos::spsc::Pop<keybad_fw::scanner::KeyEvent>,
+                },
+                self: 0x20001d90 as &lilos::exec::Notify,
+            },
+        },
+        self: 0x20001db0 as &mut lilos::spsc::Pop<keybad_fw::scanner::KeyEvent>,
+    },
+    uart: 0x20001fe4 as &stm32g0::stm32g030::USART1,
+    gpioa: 0x20001fe4 as &stm32g0::stm32g030::GPIOA,
+    keymap: 0x20000628 as &[[u8; 8]; 8],
+    setup_mode: false,
+    from_scanner: lilos::spsc::Pop<keybad_fw::scanner::KeyEvent> {
+        q: 0x20001d7c as &lilos::spsc::Queue<keybad_fw::scanner::KeyEvent>,
+        _marker: NotSyncMarker(core::marker::PhantomData<core::cell::Cell<()>>),
+    },
+    config_to_scanner: lilos::handoff::Push<keybad_fw::scanner::Config>(0x20001d94 as &lilos::handoff::Handoff<keybad_fw::scanner::Config>),
+    storage: Storage {
+        flash: FLASH {
+            _marker: core::marker::PhantomData<*const ()>,
+        },
+        pages: [
+            0x8007000 as *mut [u64; 256],
+            0x8007800 as *mut [u64; 256],
+        ],
+    },
+}
+```
+
+And with some new heuristics:
+
+```
+>> decode-async keybad_fw::serial::task::{async_fn_env#0}
+Paste hex-encoded memory blob. Whitespace OK.
+Address prefix ending in colon will be removed.
+Enter a blank line to end.
+
+(giant blob omitted)
+
+keybad_fw::serial::task::{async_fn_env#0} <.debug_info+0x0000732f>: 
+async fn keybad_fw::serial::task
+    state 4: keybad_fw::serial::task::{async_fn_env#0}::Suspend1
+waiting on: async fn lilos::spsc::{impl#4}::pop<keybad_fw::scanner::KeyEvent>
+    state 3: lilos::spsc::{impl#4}::pop::{async_fn_env#0}<keybad_fw::scanner::KeyEvent>::Suspend0
+waiting on: futures_util::future::poll_fn::PollFn<lilos::exec::{impl#1}::until::{closure_env#0}<core::option::Option<keybad_fw::scanner::KeyEvent>, lilos::spsc::{impl#4}::pop::{async_fn#0}::{closure_env#0}<keybad_fw::scanner::KeyEvent>>> (not an async fn)
+```
