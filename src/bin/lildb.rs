@@ -1879,8 +1879,6 @@ fn cmd_tasks(db: &debugdb::DebugDb, ctx: &mut Ctx, args: &str) {
             }
         };
         let mut v = &outer;
-        let parts = Regex::new(r#"^(.*)::\{async_fn_env#0\}(<.*)?$"#).unwrap();
-        let suspend_state = Regex::new(r#"::Suspend([0-9]+)$"#).unwrap();
         let mut first = true;
         let bold = ansi_term::Style::new().bold();
         loop {
@@ -1888,130 +1886,201 @@ fn cmd_tasks(db: &debugdb::DebugDb, ctx: &mut Ctx, args: &str) {
                 print!("waiting on: ");
             }
             first = false;
-            let Value::Enum(e) = v else {
-                println!("{}hand-rolled future{}", bold.prefix(), bold.suffix());
-                println!("    type: {}", v.type_name());
-                break;
-            };
-            let Some(parts) = parts.captures(&e.name) else {
-                println!("(name is weird for an async fn env)");
-                break;
-            };
-            let name = &parts[1];
-            let parms = parts.get(2).map(|m| m.as_str()).unwrap_or("");
-            println!("async fn {}{name}{parms}{}", bold.prefix(), bold.suffix());
-            let state = &e.disc;
-            let state_name = &e.value.name;
 
-            let state = if state_name.ends_with("Unresumed") {
-                AsyncFnState::Unresumed
-            } else if state_name.ends_with("Returned") {
-                AsyncFnState::Returned
-            } else if state_name.ends_with("Panicked") {
-                AsyncFnState::Panicked
-            } else if let Some(sc) = suspend_state.captures(state_name) {
-                if let Ok(n) = sc[1].parse::<usize>() {
-                    AsyncFnState::Suspend(n)
-                } else {
-                    println!("    unrecognized state {state}: {state_name}");
-                    break;
-                }
+            let next = await_trace_frame(
+                ctx,
+                db,
+                time,
+                v,
+            );
+            if let Some(n) = next {
+                v = n;
             } else {
-                println!("    unrecognized state {state}: {state_name}");
-                break;
-            };
-
-            match name {
-                "lilos::exec::sleep_until" => {
-                    match get_async_fn_local(v, "deadline") {
-                        Ok(Some(deadline)) => {
-                            if let Some(t) = deadline.newtype("lilos::time::TickTime") {
-                                if let Some(t) = t.u64_value() {
-                                    print!("    sleeping until: {}", t);
-                                    if let Some(time) = time {
-                                        if time < t {
-                                            let n = t - time;
-                                            print!(" ({n} ms from now)");
-                                        } else if time == t {
-                                            print!(" (now)");
-                                        } else {
-                                            let n = time - t;
-                                            print!(" {}({n} ms ago!){}",
-                                                Colour::Red.prefix(),
-                                                Colour::Red.suffix());
-                                        }
-                                    }
-                                    println!();
-                                }
-                            }
-                            break;
-                        }
-                        Ok(None) => println!("no local"),
-                        Err(e) => println!("{e:?}"),
-                    }
-                }
-                "lilos::spsc::{impl#4}::pop" => {
-                    match get_async_fn_local(v, "self") {
-                        Ok(Some(shelf)) => {
-                            if let Value::Pointer(p) = shelf {
-                                match get_spsc_from_handle(
-                                    &ctx.segments,
-                                    db,
-                                    p.value,
-                                    p.dest_type_id,
-                                ) {
-                                    Ok((qty, addr)) => {
-                                        println!("    waiting for data in spsc queue at {addr:#x}");
-                                        println!("    queue type: {}", NamedGoff(db, qty));
-                                    }
-                                    Err(e) => {
-                                        println!("    can't interpret: {e}");
-                                    }
-                                }
-                                break;
-                            }
-                        }
-                        Ok(None) => println!("no local"),
-                        Err(e) => println!("{e:?}"),
-                    }
-                }
-                _ => (),
-            }
-
-            match state {
-                AsyncFnState::Unresumed =>  {
-                    println!("    future has not yet been polled");
-                    break;
-                }
-                AsyncFnState::Returned => {
-                    println!("    future has already resolved");
-                    break;
-                }
-                AsyncFnState::Panicked => {
-                    println!("    future panicked on previous poll");
-                    break;
-                }
-                AsyncFnState::Suspend(n) => {
-                    println!("    suspended at await point {n}");
-                }
-            }
-
-            let mut awaitees = e.value.members_named("__awaitee");
-            let Some(awaitee) = awaitees.next() else {
-                println!(" (stopped unexpectedly)");
-                break;
-            };
-            if awaitees.next().is_some() {
-                println!(" (multiple __awaitee fields)");
                 break;
             }
-            v = awaitee;
         }
         if verbose {
             println!("{}", bold.paint("full dump:"));
             println!("{}", ValueWithDb(outer, db));
         }
     }
+}
+
+fn await_trace_frame<'v>(
+    ctx: &Ctx,
+    db: &DebugDb,
+    time: Option<u64>,
+    value: &'v Value,
+) -> Option<&'v Value> {
+    let parts = Regex::new(r#"^(.*)::\{async_fn_env#0\}(<.*)?$"#).unwrap();
+    let suspend_state = Regex::new(r#"::Suspend([0-9]+)$"#).unwrap();
+    let bold = ansi_term::Style::new().bold();
+
+    let Value::Enum(e) = value else {
+        return await_trace_handroll(ctx, db, time, value);
+    };
+    let Some(parts) = parts.captures(&e.name) else {
+        println!("(name is weird for an async fn env)");
+        return None;
+    };
+    let name = &parts[1];
+    let parms = parts.get(2).map(|m| m.as_str()).unwrap_or("");
+    println!("async fn {}{name}{parms}{}", bold.prefix(), bold.suffix());
+    let state = &e.disc;
+    let state_name = &e.value.name;
+
+    let state = if state_name.ends_with("Unresumed") {
+        AsyncFnState::Unresumed
+    } else if state_name.ends_with("Returned") {
+        AsyncFnState::Returned
+    } else if state_name.ends_with("Panicked") {
+        AsyncFnState::Panicked
+    } else if let Some(sc) = suspend_state.captures(state_name) {
+        if let Ok(n) = sc[1].parse::<usize>() {
+            AsyncFnState::Suspend(n)
+        } else {
+            println!("    unrecognized state {state}: {state_name}");
+            return None;
+        }
+    } else {
+        println!("    unrecognized state {state}: {state_name}");
+        return None;
+    };
+
+    match name {
+        "lilos::exec::sleep_until" => {
+            match get_async_fn_local(value, "deadline") {
+                Ok(Some(deadline)) => {
+                    if let Some(t) = deadline.newtype("lilos::time::TickTime") {
+                        if let Some(t) = t.u64_value() {
+                            print!("    sleeping until: {}", t);
+                            if let Some(time) = time {
+                                if time < t {
+                                    let n = t - time;
+                                    print!(" ({n} ms from now)");
+                                } else if time == t {
+                                    print!(" (now)");
+                                } else {
+                                    let n = time - t;
+                                    print!(" {}({n} ms ago!){}",
+                                    Colour::Red.prefix(),
+                                    Colour::Red.suffix());
+                                }
+                            }
+                            println!();
+                        }
+                    }
+                    return None;
+                }
+                Ok(None) => println!("no local"),
+                Err(e) => println!("{e:?}"),
+            }
+        }
+        "lilos::spsc::{impl#4}::pop" => {
+            match get_async_fn_local(value, "self") {
+                Ok(Some(shelf)) => {
+                    if let Value::Pointer(p) = shelf {
+                        match get_spsc_from_handle(
+                            &ctx.segments,
+                            db,
+                            p.value,
+                            p.dest_type_id,
+                        ) {
+                            Ok((qty, addr)) => {
+                                println!("    waiting for data in spsc queue at {addr:#x}");
+                                println!("    queue type: {}", NamedGoff(db, qty));
+                            }
+                            Err(e) => {
+                                println!("    can't interpret: {e}");
+                            }
+                        }
+                        return None;
+                    }
+                }
+                Ok(None) => println!("no local"),
+                Err(e) => println!("{e:?}"),
+            }
+        }
+        _ => (),
+    }
+
+    match state {
+        AsyncFnState::Unresumed =>  {
+            println!("    future has not yet been polled");
+            return None;
+        }
+        AsyncFnState::Returned => {
+            println!("    future has already resolved");
+            return None;
+        }
+        AsyncFnState::Panicked => {
+            println!("    future panicked on previous poll");
+            return None;
+        }
+        AsyncFnState::Suspend(n) => {
+            println!("    suspended at await point {n}");
+        }
+    }
+
+    let mut awaitees = e.value.members_named("__awaitee");
+    let Some(awaitee) = awaitees.next() else {
+        println!(" (stopped unexpectedly)");
+        return None;
+    };
+    if awaitees.next().is_some() {
+        println!(" (multiple __awaitee fields)");
+        return None;
+    }
+    Some(awaitee)
+}
+
+fn await_trace_handroll<'v>(
+    _ctx: &Ctx,
+    db: &DebugDb,
+    _time: Option<u64>,
+    value: &'v Value,
+) -> Option<&'v Value> {
+    let bold = ansi_term::Style::new().bold();
+
+    match value {
+        Value::Struct(s) => {
+            if s.name.starts_with("lilos::exec::Until<") {
+                if let Some(notify) = s.unique_member_named("notify") {
+                    if let Value::Pointer(p) = notify {
+                        print!("{}notify ",
+                            bold.prefix());
+
+                        let mut named = false;
+                        for ar in db.entities_by_address(p.value) {
+                            if ar.range.start == p.value {
+                                if let EntityId::Var(v) = ar.entity {
+                                    let v = db.static_variable_by_id(v).unwrap();
+                                    print!("{}", v.name);
+                                    named = true;
+                                    break;
+                                }
+                            }
+                        }
+
+                        if !named {
+                            print!("at {:#x}", p.value);
+                        }
+                        println!("{}", bold.suffix());
+
+                        if let Some(cond) = s.unique_member_named("cond") {
+                            println!("    predicate: {}", cond.type_name());
+                        }
+                        return None;
+                    }
+                }
+            }
+        }
+        _ => (),
+    }
+
+    println!("{}hand-rolled future{}", bold.prefix(), bold.suffix());
+    println!("    type: {}", value.type_name());
+    None
 }
 
 enum AsyncFnState {
@@ -2053,6 +2122,7 @@ struct TimeVars {
     tick: VarId,
     epoch: Option<VarId>,
 }
+
 fn get_time<M: Machine>(machine: &M, db: &DebugDb, time_vars: &TimeVars) -> Result<u64, LoadError<M::Error>> {
     let low = {
         let tick = db.static_variable_by_id(time_vars.tick).unwrap();
