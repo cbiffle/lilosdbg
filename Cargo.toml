@@ -9,7 +9,7 @@ edition = "2021"
 ansi_term = "0.12.1"
 anyhow = "1.0.71"
 clap = { version = "4.3.5", features = ["derive"] }
-debugdb = {path = "../dwarfldr"}
+debugdb = {git = "https://github.com/cbiffle/debugdb"}
 gimli = "0.26.1"
 object = "0.26"
 parse_int = "0.6.0"
