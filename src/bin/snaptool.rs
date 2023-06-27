@@ -28,7 +28,7 @@ fn main() -> Result<()> {
 
             let mut addr_width = 8 + 2;
             let mut size_width = 8;
-            for (range, info) in snapshot.ranges() {
+            for (range, _info) in snapshot.ranges() {
                 if *range.start() > u64::from(u32::MAX) || *range.end() > u64::from(u32::MAX) {
                     addr_width = 16 + 2;
                 }

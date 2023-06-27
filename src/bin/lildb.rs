@@ -158,6 +158,7 @@ static COMMANDS: &[(&str, Command, &str)] = &[
 
     ("tasks", cmd_tasks, "print lilos task status"),
     ("time", cmd_time, "print current lilos tick time"),
+    ("stack", cmd_stack, "print information about stack usage"),
 ];
 
 fn cmd_list(
@@ -1714,7 +1715,34 @@ fn cmd_load(
     ctx.segments.insert(address..=end, image);
 }
 
-fn cmd_time(db: &debugdb::DebugDb, ctx: &mut Ctx, args: &str) {
+fn cmd_stack(db: &debugdb::DebugDb, ctx: &mut Ctx, _args: &str) {
+    let (stack_ty, dead_val, wid) = match db.pointer_size() {
+        4 => ("u32", 0xDEDEDEDE, 10),
+        8 => ("u64", 0xDEDEDEDE_DEDEDEDE, 18),
+        _ => {
+            println!("unsupported image pointer size");
+            return;
+        }
+    };
+    match get_stack_used(&ctx.segments, db, stack_ty, dead_val) {
+        Ok(Some((base, used, top))) => {
+            let bytes_used = top - used;
+            let bytes_avail = top - base;
+            let free = used - base;
+            println!("stack top:         {top:#wid$x}");
+            println!("lowest stack used: {used:#wid$x}");
+            println!("bytes used: {bytes_used} / {bytes_avail} ({free} free)");
+        }
+        Ok(None) => {
+            println!("can't determine stack shape");
+        }
+        Err(e) => {
+            println!("can't access stack: {e}");
+        }
+    }
+}
+
+fn cmd_time(db: &debugdb::DebugDb, ctx: &mut Ctx, _args: &str) {
     if let Some(tv) = find_time_vars(db) {
         match get_time(&ctx.segments, db, &tv) {
             Ok(t) => {
@@ -1821,7 +1849,7 @@ fn cmd_tasks(db: &debugdb::DebugDb, ctx: &mut Ctx, args: &str) {
             println!("Pin missing pointer member");
             return;
         };
-        let Some(dyn_caps) = dynptr.captures(&fat_pointer.name) else {
+        let Some(_dyn_caps) = dynptr.captures(&fat_pointer.name) else {
             println!("dyn pointer name format unexpected: {}",
                 &fat_pointer.name);
             return;
@@ -1866,7 +1894,7 @@ fn cmd_tasks(db: &debugdb::DebugDb, ctx: &mut Ctx, args: &str) {
             }
         }
 
-        let Some((concrete_tid, concrete_ty)) = concrete_type else {
+        let Some((_concrete_tid, concrete_ty)) = concrete_type else {
             println!("concrete type for vtable not found: {vt_addr:#x}");
             return;
         };
@@ -2093,7 +2121,7 @@ enum AsyncFnState {
 fn get_async_fn_local<'e>(env: &'e Value, name: &str) -> Result<Option<&'e Value>, LocalError> {
     let Value::Enum(env) = env else { return Err(LocalError::NotEnum) };
     let parts = Regex::new(r#"^(.*)::\{async_fn_env#0\}(<.*)?$"#).unwrap();
-    let Some(parts) = parts.captures(&env.name) else {
+    let Some(_parts) = parts.captures(&env.name) else {
         return Err(LocalError::NotAnEnv);
     };
 
@@ -2108,7 +2136,6 @@ fn get_async_fn_local<'e>(env: &'e Value, name: &str) -> Result<Option<&'e Value
 enum LocalError {
     NotEnum,
     NotAnEnv,
-    Ambiguous,
 }
 
 fn find_time_vars(db: &DebugDb) -> Option<TimeVars> {
@@ -2155,4 +2182,41 @@ fn get_spsc_from_handle<M: Machine>(machine: &M, db: &DebugDb, address: u64, han
     let q_ty = db.type_by_id(q_m.type_id).unwrap();
     let p = value::Pointer::from_state(machine, address + q_m.location, db, q_ty)?;
     Ok((p.dest_type_id, p.value))
+}
+
+fn get_stack_used<M: Machine>(machine: &M, db: &DebugDb, unit: &str, value: u64) -> Result<Option<(u64, u64, u64)>, LoadError<M::Error>> {
+    let stack_start = db.unique_raw_symbol_by_name("_stack_start").unwrap();
+
+    let stack_limit = db.unique_raw_symbol_by_name("_stack_limit");
+
+    let stack_base = if let Some(limit) = stack_limit {
+        // Trust an explicit symbol over any heuristic.
+        limit
+    } else {
+        let heap_start = db.unique_raw_symbol_by_name("__sheap").unwrap();
+
+        if stack_start > heap_start {
+            // Assume conventional memory layout (open to stack clash)
+            heap_start
+        } else {
+            println!("cannot determine maximum extent of stack.");
+            println!("stack does not grow toward heap, and no _stack_limit symbol is present.");
+            return Ok(None);
+        }
+    };
+
+    let (_, unit_ty) = db.types_by_name(unit).next().unwrap();
+    let unit = unit_ty.byte_size(db).unwrap();
+    let unit = usize::try_from(unit).unwrap();
+    
+    for addr in (stack_base..stack_start).step_by(unit) {
+        let chunk = value::Base::from_state(machine, addr, db, unit_ty)?;
+        if chunk.as_u64().unwrap() != value {
+            // We've found the first written word of the stack!
+            return Ok(Some((stack_base, addr, stack_start)));
+        }
+    }
+    // If we fall out of the loop, it's because the entire stack has intact
+    // scribbles.
+    Ok(Some((stack_base, stack_start, stack_start)))
 }

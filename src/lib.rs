@@ -1,6 +1,6 @@
 use std::{io::{Read, Seek}, ops::RangeInclusive};
 
-use rangemap::{RangeMap, RangeInclusiveMap};
+use rangemap::RangeInclusiveMap;
 use regex::Regex;
 use thiserror::Error;
 use zip::ZipArchive;
