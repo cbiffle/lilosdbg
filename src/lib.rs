@@ -9,7 +9,21 @@ pub fn load_snapshot<F: Read + Seek>(
     source: F,
 ) -> Result<Snapshot<F>, SnapshotError> {
     let segname = Regex::new(r#"^([0-9a-fA-F]+)@([0-9a-fA-F]+)\.bin$"#).unwrap();
+    let comment_pattern = Regex::new(r#"^lilosdbg snapshot v([0-9]+)$"#).unwrap();
     let mut archive = zip::ZipArchive::new(source)?;
+    let comment = std::str::from_utf8(archive.comment())
+        .map_err(|_| SnapshotError::NotASnapshot)?;
+    let comment_parts = comment_pattern.captures(comment)
+        .ok_or(SnapshotError::NotASnapshot)?;
+
+    let format_version = comment_parts[1].parse::<u64>()
+        .map_err(|_| SnapshotError::NotASnapshot)?;
+    match format_version {
+        1 => (),
+        _ => return Err(SnapshotError::UnsupportedVersion(format_version)),
+    }
+
+
     let mut segment_files = vec![];
 
     for i in 0..archive.len() {
@@ -46,6 +60,7 @@ pub fn load_snapshot<F: Read + Seek>(
     }
 
     Ok(Snapshot {
+        format_version,
         archive,
         segment_files_by_address,
     })
@@ -53,6 +68,10 @@ pub fn load_snapshot<F: Read + Seek>(
 
 #[derive(Debug, Error)]
 pub enum SnapshotError {
+    #[error("this file is a ZIP file, but is not a snapshot")]
+    NotASnapshot,
+    #[error("snapshot is format version {0}, which we don't understand")]
+    UnsupportedVersion(u64),
     #[error("ZIP file access or format error")]
     Zip(#[from] zip::result::ZipError),
     #[error("problem accessing file within ZIP archive")]
@@ -60,8 +79,15 @@ pub enum SnapshotError {
 }
 
 pub struct Snapshot<F> {
+    format_version: u64,
     archive: ZipArchive<F>,
     segment_files_by_address: RangeInclusiveMap<u64, FileInfo>,
+}
+
+impl<F> Snapshot<F> {
+    pub fn format_version(&self) -> u64 {
+        self.format_version
+    }
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]

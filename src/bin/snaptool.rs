@@ -22,19 +22,29 @@ fn main() -> Result<()> {
             let file = std::fs::File::open(&path)?;
             let snapshot = lilosdbg::load_snapshot(file)?;
 
+            println!("snapshot format version: {}",
+                snapshot.format_version());
+            println!();
+
             let mut addr_width = 8 + 2;
+            let mut size_width = 8;
             for (range, info) in snapshot.ranges() {
                 if *range.start() > u64::from(u32::MAX) || *range.end() > u64::from(u32::MAX) {
                     addr_width = 16 + 2;
                 }
+                let n = range.end() - range.start() + 1;
+                // Expensive hacks are convenient on std platforms:
+                let decimal = format!("{}", n);
+                size_width = size_width.max(decimal.len());
             }
-            println!("{:addr_width$}     {:addr_width$}   {}",
-                "START", "END", "SOURCE");
+            println!("{:addr_width$}     {:addr_width$}  {:>size_width$}   {}",
+                "START", "END", "SIZE", "SOURCE");
             for (range, info) in snapshot.ranges() {
                 let base = range.start();
                 let end = range.end();
+                let size = end - base + 1;
                 let name = &info.name;
-                println!("{base:#0addr_width$x} ..= {end:#0addr_width$x}   {name}");
+                println!("{base:#0addr_width$x} ..= {end:#0addr_width$x}  {size:>size_width$}   {name}");
             }
 
         }
