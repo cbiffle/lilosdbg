@@ -1362,7 +1362,7 @@ fn cmd_decode_async(db: &debugdb::DebugDb, ctx: &mut Ctx, args: &str) {
                 return;
             }
         };
-        let parts = Regex::new(r#"^(.*)::\{async_fn_env#0\}(<.*)?$"#).unwrap();
+        let parts = Regex::new(r#"^(.*)::\{async_(fn|block)_env#0\}(<.*)?$"#).unwrap();
         let suspend_state = Regex::new(r#"::Suspend([0-9]+)$"#).unwrap();
         let mut first = true;
         let bold = ansi_term::Style::new().bold();
@@ -1381,7 +1381,7 @@ fn cmd_decode_async(db: &debugdb::DebugDb, ctx: &mut Ctx, args: &str) {
                 break;
             };
             let name = &parts[1];
-            let parms = parts.get(2).map(|m| m.as_str()).unwrap_or("");
+            let parms = parts.get(3).map(|m| m.as_str()).unwrap_or("");
             println!("async fn {}{name}{parms}{}", bold.prefix(), bold.suffix());
             let state = &e.disc;
             let state_name = &e.value.name;
@@ -1625,7 +1625,7 @@ fn cmd_decode_async_blob(db: &debugdb::DebugDb, _ctx: &mut Ctx, args: &str) {
                 return;
             }
         };
-        let parts = Regex::new(r#"^(.*)::\{async_fn_env#0\}(<.*)?$"#).unwrap();
+        let parts = Regex::new(r#"^(.*)::\{async_(fn|block)_env#0\}(<.*)?$"#).unwrap();
         let suspend_state = Regex::new(r#"::Suspend([0-9]+)$"#).unwrap();
         let mut first = true;
         loop {
@@ -1643,7 +1643,7 @@ fn cmd_decode_async_blob(db: &debugdb::DebugDb, _ctx: &mut Ctx, args: &str) {
                 break;
             };
             let name = &parts[1];
-            let parms = parts.get(2).map(|m| m.as_str()).unwrap_or("");
+            let parms = parts.get(3).map(|m| m.as_str()).unwrap_or("");
             println!("async fn {name}{parms}");
             let state = &e.disc;
             let state_name = &e.value.name;
@@ -1940,7 +1940,7 @@ fn await_trace_frame<'v>(
     time: Option<u64>,
     value: &'v Value,
 ) -> Option<&'v Value> {
-    let parts = Regex::new(r#"^(.*)::\{async_fn_env#0\}(<.*)?$"#).unwrap();
+    let parts = Regex::new(r#"^(.*)::\{async_(fn|block)_env#0\}(<.*)?$"#).unwrap();
     let suspend_state = Regex::new(r#"::Suspend([0-9]+)$"#).unwrap();
     let bold = ansi_term::Style::new().bold();
 
@@ -1952,7 +1952,7 @@ fn await_trace_frame<'v>(
         return None;
     };
     let name = &parts[1];
-    let parms = parts.get(2).map(|m| m.as_str()).unwrap_or("");
+    let parms = parts.get(3).map(|m| m.as_str()).unwrap_or("");
     println!("async fn {}{name}{parms}{}", bold.prefix(), bold.suffix());
     let state = &e.disc;
     let state_name = &e.value.name;
