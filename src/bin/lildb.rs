@@ -1975,6 +1975,70 @@ fn await_trace_frame<'v>(
         return None;
     };
 
+    // Try and report the line number (decl coords). The decl coords are present
+    // on the enum variant member. That is,
+    //
+    // enum yadda::yadda::{async_fn_env#0}
+    //      variant 2
+    //          member
+    //              decl coords here
+    //
+    // So, we need to find the actual type (rather than the reflected enum,
+    // which we've been using as a shortcut), and then find the variant. The
+    // variant names don't match the state struct names (e.g. they are not
+    // things like Suspend0), so we have to do the matching by _also_ getting
+    // the tid of the state struct, and checking if the member matches that
+    // type.
+    //
+    // Whee.
+    //
+    // First we'll see if we can find a tid for the state struct.
+    let mut has_decl_coords = false;
+    if let Some((state_tid, _)) = db.types_by_name(state_name).next() {
+        // Cool. See if we can find the enum type. There can easily be more than
+        // one such type; we'll process the first one that seems vaguely
+        // plausible.
+        'enumloop:
+        for (_tid, ty) in db.types_by_name(&e.name) {
+            // We expect the type to be an enum.
+            let Type::Enum(ty) = ty else { continue };
+            // We expect the enum to have at least four variants, because
+            // that's how async fn enums currently work, which means we only
+            // have to handle one
+            // of the possible variantshapes.
+            let VariantShape::Many { variants, .. } = &ty.shape
+                else { continue };
+            // We expect one of the variants' members to correspond to the state
+            // struct tid.
+            for v in variants.values() {
+                if v.member.type_id == state_tid {
+                    // Wow! We found it!
+                    //
+                    // ... does it have decl coord information?
+                    if v.member.decl_coord.is_useful() {
+                        let d = &v.member.decl_coord; // shorthand
+                        print!("    suspended at {}:", d.file.as_deref().unwrap_or("???"));
+                        if let Some(n) = d.line {
+                            print!("{n}");
+                        } else {
+                            print!("???");
+                        }
+                        // Be more tolerant of missing columns; they're often
+                        // missing.
+                        if let Some(n) = d.column {
+                            print!(":{n}");
+                        }
+                        println!();
+                        has_decl_coords = true;
+                        // Stop processing things
+                        break 'enumloop;
+                    }
+                }
+            }
+        }
+    }
+
+
     match name {
         "lilos::exec::sleep_until" => {
             match get_async_fn_local(value, "deadline") {
@@ -2046,7 +2110,9 @@ fn await_trace_frame<'v>(
             return None;
         }
         AsyncFnState::Suspend(n) => {
-            println!("    suspended at await point {n}");
+            if !has_decl_coords {
+                println!("    suspended at await point {n}");
+            }
         }
     }
 
