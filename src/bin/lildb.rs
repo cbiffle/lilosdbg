@@ -217,6 +217,7 @@ static COMMANDS: &[(&str, Command, &str)] = &[
     ("tasks", cmd_tasks, "print lilos task status"),
     ("time", cmd_time, "print current lilos tick time"),
     ("stack", cmd_stack, "print information about stack usage"),
+    ("stacktrace", cmd_stacktrace, "experimental backtrace support"),
     ("reg", cmd_reg, "register access"),
 ];
 
@@ -941,7 +942,7 @@ fn cmd_addr(db: &debugdb::DebugDb, _ctx: &mut Ctx, args: &str) {
             debugdb::EntityId::Prog(pid) => {
                 let p = db.subprogram_by_id(pid).unwrap();
                 if let Some(n) = &p.name {
-                    println!("subprogram {}", bold.paint(n));
+   println!("subprogram {}", bold.paint(n));
                 } else {
                     println!("subprogram {}", bold.paint("ANON"));
                 }
@@ -2344,6 +2345,209 @@ fn get_stack_used<M: Machine>(machine: &M, db: &DebugDb, unit: &str, value: u64)
     // If we fall out of the loop, it's because the entire stack has intact
     // scribbles.
     Ok(Some((stack_base, stack_start, stack_start)))
+}
+
+fn cmd_stacktrace(db: &debugdb::DebugDb, ctx: &mut Ctx, args: &str) {
+    let verbose = args.trim() == "-v";
+    let Some(mut pc) = ctx.program_counter() else {
+        println!("program counter not present in machine state");
+        return;
+    };
+
+    let orig_regs = ctx.registers.clone();
+    let mut ctx = scopeguard::guard(ctx, |ctx| {
+        ctx.registers = orig_regs;
+    });
+
+    println!("stack trace:");
+    let bold = ansi_term::Style::new().bold();
+    let dim = ansi_term::Style::new().dimmed();
+
+    loop {
+        let mut printed_info = false;
+        if let Ok(Some(trc)) = db.static_stack_for_pc(pc) {
+            let last = trc.len() - 1;
+            for (i, record) in trc.iter().rev().enumerate() {
+                let subp = db.subprogram_by_id(record.subprogram).unwrap();
+
+                if i != last {
+                    print!("{:10}  ", "(inline)");
+                } else {
+                    print!("{pc:#010x}  ");
+                }
+
+                if let Some(n) = &subp.name {
+                    print!("{}", bold.prefix());
+                    if verbose {
+                        print!("{n}");
+                    } else {
+                        let (prefix, ellipsis) = n.split_once('<').map(|(before, _after)| (before, "<...>")).unwrap_or((n, ""));
+                        print!("{prefix}{ellipsis}");
+                    }
+                    println!("{}", bold.suffix());
+                } else {
+                    println!("{}", bold.paint("<unknown-subprogram>"));
+                }
+                print!("{}", dim.prefix());
+                print!("    at {}:", record.file);
+                if let Some(line) = record.line {
+                    print!("{}:", line);
+                } else {
+                    print!("?:");
+                }
+                if let Some(col) = record.column {
+                    print!("{}", col);
+                } else {
+                    print!("?");
+                }
+                print!("{}", dim.suffix());
+                println!();
+            }
+            printed_info = true;
+        } else {
+            for e in db.entities_by_address(pc) {
+                let offset = pc - e.range.start;
+                if let EntityId::Prog(pid) = e.entity {
+                    if let Some(p) = db.subprogram_by_id(pid) {
+                        if let Some(n) = &p.name {
+                            println!("{n} + {offset:#x}");
+                            if let Some(row) = db.lookup_line_row(pc) {
+                                print!("    {}:", row.file);
+                                if let Some(line) = row.line {
+                                    print!("{}:", line);
+                                } else {
+                                    print!("?:");
+                                }
+                                if let Some(col) = row.column {
+                                    print!("{}", col);
+                                } else {
+                                    print!("?");
+                                }
+                                println!();
+                            }
+                            printed_info = true;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        if !printed_info {
+            println!("{pc:#010x}  (unknown!)");
+        }
+
+        if verbose {
+            for (r, v) in &ctx.registers {
+                println!("    reg {r} = {v:#x}");
+            }
+        }
+
+        use gimli::UnwindSection;
+        let mut uctx = gimli::UnwindContext::new();
+        let bases = gimli::BaseAddresses::default();
+        let fde = match db.debug_frame.fde_for_address(&bases, pc, gimli::DebugFrame::cie_from_offset) {
+            Ok(fde) => fde,
+            Err(e) => {
+                println!("Unable to get FDE for address {pc:#x}: {e:?}");
+                return;
+            }
+        };
+
+        let ra_reg = fde.cie().return_address_register();
+
+        let unwind = match fde.unwind_info_for_address(&db.debug_frame, &bases, &mut uctx, pc) {
+            Ok(u) => u,
+            Err(e) => {
+                println!("Unable to get unwind info for address {pc:#x}: {e:?}");
+                return;
+            }
+        };
+
+        let caller_cfa;
+        match unwind.cfa() {
+            gimli::CfaRule::RegisterAndOffset { register, offset } => {
+                let Some(regval) = ctx.register(register.0) else {
+                    println!("register {} not found in machine state", register.0);
+                    return;
+                };
+                caller_cfa = if *offset < 0 {
+                    regval - (-*offset) as u64
+                } else {
+                    regval + *offset as u64
+                };
+            }
+            other => panic!("unsupported CFA rule type: {:?}", other),
+        }
+        let mut caller_regs: BTreeMap<u16, u64> = BTreeMap::new();
+
+        // TODO ARM-specific
+        caller_regs.insert(13, caller_cfa);
+
+        for (n, rule) in unwind.registers() {
+            let value = match rule {
+                gimli::RegisterRule::Offset(n) => {
+                    let addr = if *n < 0 {
+                        caller_cfa - (-n) as u64
+                    } else {
+                        caller_cfa + *n as u64
+                    };
+                    // TODO: hmmmmm how do we know the size of registers
+                    // This current code is a haaaack
+                    if db.pointer_size() == 8 {
+                        let t = db.types_by_name("u64").next().unwrap().1;
+                        match u64::from_state(&ctx.segments, addr, db, t) {
+                            Ok(x) => Some(x),
+                            Err(e) => {
+                                println!("{e:?}");
+                                return;
+                            }
+                        }
+                    } else {
+                        let t = db.types_by_name("u32").next().unwrap().1;
+                        match u32::from_state(&ctx.segments, addr, db, t) {
+                            Ok(x) => Some(x as u64),
+                            Err(e) => {
+                                println!("{e:?}");
+                                return;
+                            }
+                        }
+                    }
+                }
+                gimli::RegisterRule::ValOffset(n) => {
+                    Some(if *n < 0 {
+                        caller_cfa - (-n) as u64
+                    } else {
+                        caller_cfa + *n as u64
+                    })
+                }
+                gimli::RegisterRule::SameValue => {
+                    ctx.register(n.0)
+                }
+                gimli::RegisterRule::Register(n) => {
+                    ctx.register(n.0)
+                }
+                _ => {
+                    println!("unsupported reg rule {:?}", rule);
+                    return;
+                }
+            };
+
+            let Some(value) = value else {
+                println!("data missing from machine snapshot");
+                return;
+            };
+
+            caller_regs.insert(n.0, value);
+        }
+
+        let Some(&return_address) = caller_regs.get(&ra_reg.0) else {
+            println!("return address missing from frame.");
+            return;
+        };
+
+        ctx.registers = caller_regs;
+        pc = return_address;
+    }
 }
 
 fn cmd_reg(_db: &debugdb::DebugDb, ctx: &mut Ctx, args: &str) {
