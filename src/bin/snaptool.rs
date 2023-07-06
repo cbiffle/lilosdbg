@@ -26,6 +26,20 @@ fn main() -> Result<()> {
                 snapshot.format_version());
             println!();
 
+            if snapshot.has_registers() {
+                println!("Register state:");
+                for (r, v) in snapshot.registers() {
+                    println!("    reg {r} = {v:#x}");
+                }
+            }
+
+            if snapshot.has_elf_files() {
+                println!("ELF files:");
+                for (_, f) in snapshot.elf_files() {
+                    println!("    {f}");
+                }
+            }
+
             let mut addr_width = 8 + 2;
             let mut size_width = 8;
             for (range, _info) in snapshot.ranges() {
@@ -37,6 +51,7 @@ fn main() -> Result<()> {
                 let decimal = format!("{}", n);
                 size_width = size_width.max(decimal.len());
             }
+            println!("Segments:");
             println!("{:addr_width$}     {:addr_width$}  {:>size_width$}   {}",
                 "START", "END", "SIZE", "SOURCE");
             for (range, info) in snapshot.ranges() {

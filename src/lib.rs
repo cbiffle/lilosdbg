@@ -1,4 +1,4 @@
-use std::{io::{Read, Seek}, ops::RangeInclusive};
+use std::{io::{Read, Seek}, ops::RangeInclusive, collections::BTreeMap};
 
 use rangemap::RangeInclusiveMap;
 use regex::Regex;
@@ -24,10 +24,13 @@ pub fn load_snapshot<F: Read + Seek>(
     }
 
 
+    let mut elf_files = vec![];
     let mut segment_files = vec![];
 
+    let mut registers = BTreeMap::new();
+
     for i in 0..archive.len() {
-        let file = archive.by_index(i)?;
+        let mut file = archive.by_index(i)?;
         let name = file.name();
         if let Some((root, rest)) = name.split_once('/') {
             if root == "seg" {
@@ -43,9 +46,22 @@ pub fn load_snapshot<F: Read + Seek>(
                         }
                     }
                 }
+            } else if root == "elf" && rest != "" {
+                elf_files.push((i, name.to_string()));
             }
+        } else if name == "registers.toml" {
+            let mut contents = vec![];
+            file.read_to_end(&mut contents)?;
+            let contents = std::str::from_utf8(&contents).map_err(SnapshotError::Reg)?;
+            let r: BTreeMap<String, u64> = toml::de::from_str(contents).map_err(SnapshotError::RegToml)?;
+            registers = r.into_iter().map(|(r, v)| {
+                let r = r.parse::<u16>().map_err(SnapshotError::RegTomlKey)?;
+                Ok::<_, SnapshotError>((r, v))
+            }).collect::<Result<_, _>>()?;
         }
     }
+
+    elf_files.sort_by(|a, b| a.1.cmp(&b.1));
 
     segment_files.sort_unstable_by_key(|(addrs, order, index, name)| (*addrs.start(), *order, *index, name.clone())); // sigh
 
@@ -62,7 +78,9 @@ pub fn load_snapshot<F: Read + Seek>(
     Ok(Snapshot {
         format_version,
         archive,
+        elf_files,
         segment_files_by_address,
+        registers,
     })
 }
 
@@ -74,6 +92,12 @@ pub enum SnapshotError {
     UnsupportedVersion(u64),
     #[error("ZIP file access or format error")]
     Zip(#[from] zip::result::ZipError),
+    #[error("could not load register file as UTF-8")]
+    Reg(#[source] std::str::Utf8Error),
+    #[error("could not parse register file as TOML")]
+    RegToml(#[source] toml::de::Error),
+    #[error("could not parse register name as integer")]
+    RegTomlKey(#[source] std::num::ParseIntError),
     #[error("problem accessing file within ZIP archive")]
     Io(#[from] std::io::Error),
 }
@@ -81,12 +105,35 @@ pub enum SnapshotError {
 pub struct Snapshot<F> {
     format_version: u64,
     archive: ZipArchive<F>,
+    elf_files: Vec<(usize, String)>,
     segment_files_by_address: RangeInclusiveMap<u64, FileInfo>,
+    registers: BTreeMap<u16, u64>,
 }
 
 impl<F> Snapshot<F> {
     pub fn format_version(&self) -> u64 {
         self.format_version
+    }
+
+    pub fn ranges(&self) -> impl Iterator<Item = (RangeInclusive<u64>, &FileInfo)> {
+        self.segment_files_by_address.iter().map(|(r, f)| (r.clone(), f))
+    }
+
+    pub fn has_elf_files(&self) -> bool {
+        !self.elf_files.is_empty()
+    }
+
+    pub fn elf_files(&self) -> impl Iterator<Item = (usize, &str)> {
+        self.elf_files.iter()
+            .map(|(i, name)| (*i, name.as_str()))
+    }
+
+    pub fn has_registers(&self) -> bool {
+        !self.registers.is_empty()
+    }
+
+    pub fn registers(&self) -> impl Iterator<Item = (u16, u64)> + '_ {
+        self.registers.iter().map(|(r, v)| (*r, *v))
     }
 }
 
@@ -156,8 +203,8 @@ impl<F: Read + Seek> Snapshot<F> {
         Ok(read_size)
     }
 
-    pub fn ranges(&self) -> impl Iterator<Item = (&RangeInclusive<u64>, &FileInfo)> {
-        self.segment_files_by_address.iter()
+    pub fn file_by_index(&mut self, i: usize) -> impl Read + '_ {
+        self.archive.by_index(i).unwrap()
     }
 }
 
