@@ -1,7 +1,9 @@
+use std::collections::BTreeMap;
+use std::io::Read;
 use std::sync::atomic::Ordering;
 use std::{fmt::Display, io::BufRead};
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 use clap::Parser;
 use debugdb::{EntityId, VarId};
 use debugdb::value::{ValueWithDb, self};
@@ -21,26 +23,71 @@ struct Lildb {
 fn main() -> Result<()> {
     let args = Lildb::parse();
 
-    let buffer = std::fs::read(args.filename)?;
-    let object = object::File::parse(&*buffer)?;
+    let everything;
     let mut segments = RangeInclusiveMap::new();
-    for seg in object.segments() {
-        if seg.size() == 0 {
-            continue;
+    let mut registers = BTreeMap::new();
+
+    let input = std::fs::File::open(&args.filename)?;
+
+    // First, try loading as a snapshot.
+    if let Ok(mut snap) = lilosdbg::load_snapshot(input) {
+        let elf_files = snap.elf_files().collect::<Vec<_>>();
+        if elf_files.len() == 0 {
+            bail!("snapshot does not contain ELF file.");
+        } else if elf_files.len() > 1 {
+            bail!("snapshot contains too many ELF files.");
         }
-        segments.insert(
-            seg.address()..=seg.address() + (seg.size() - 1),
-            seg.data()?.to_vec(),
-        );
+
+        let mut image = vec![];
+        snap.file_by_index(elf_files[0].0).read_to_end(&mut image)?;
+        let object = object::File::parse(&*image)?;
+        for seg in object.segments() {
+            if seg.size() == 0 {
+                continue;
+            }
+            segments.insert(
+                seg.address()..=seg.address() + (seg.size() - 1),
+                seg.data()?.to_vec(),
+            );
+        }
+        everything = debugdb::parse_file(&object)?;
+
+        // TODO ugh, zip wants &mut to do reads, making it damn hard to iterate
+        // over the snapshot... this crate might not be the right crate
+        let range_copy = snap.ranges().map(|(r, f)| (r, f.index)).collect::<Vec<_>>();
+        for (addrs, index) in range_copy {
+            let mut image = vec![];
+            snap.file_by_index(index).read_to_end(&mut image)?;
+            segments.insert(addrs, image);
+        }
+
+        for (i, v) in snap.registers() {
+            registers.insert(i, v);
+        }
+    } else {
+        let buffer = std::fs::read(args.filename)?;
+        let object = object::File::parse(&*buffer)?;
+        for seg in object.segments() {
+            if seg.size() == 0 {
+                continue;
+            }
+            segments.insert(
+                seg.address()..=seg.address() + (seg.size() - 1),
+                seg.data()?.to_vec(),
+            );
+        }
+        everything = debugdb::parse_file(&object)?;
     }
-    let everything = debugdb::parse_file(&object)?;
 
     println!("Loaded; {} types found in program.", everything.type_count());
     println!("To quit: ^D or exit");
 
     let mut rl = rustyline::Editor::<(), _>::new()?;
     let prompt = ansi_term::Colour::Green.paint(">> ").to_string();
-    let mut ctx = Ctx { segments };
+    let mut ctx = Ctx {
+        segments,
+        registers,
+    };
     'lineloop:
     loop {
         match rl.readline(&prompt) {
@@ -134,6 +181,17 @@ impl std::fmt::Display for NamedGoff<'_> {
 
 struct Ctx {
     segments: RangeInclusiveMap<u64, Vec<u8>>,
+    registers: BTreeMap<u16, u64>,
+}
+
+impl Ctx {
+    pub fn program_counter(&self) -> Option<u64> {
+        // TODO very ARM-specific!
+        self.registers.get(&15).copied()
+    }
+    pub fn register(&self, index: u16) -> Option<u64> {
+        self.registers.get(&index).copied()
+    }
 }
 
 type Command = fn(&debugdb::DebugDb, &mut Ctx, &str);
@@ -159,6 +217,7 @@ static COMMANDS: &[(&str, Command, &str)] = &[
     ("tasks", cmd_tasks, "print lilos task status"),
     ("time", cmd_time, "print current lilos tick time"),
     ("stack", cmd_stack, "print information about stack usage"),
+    ("reg", cmd_reg, "register access"),
 ];
 
 fn cmd_list(
@@ -2285,4 +2344,32 @@ fn get_stack_used<M: Machine>(machine: &M, db: &DebugDb, unit: &str, value: u64)
     // If we fall out of the loop, it's because the entire stack has intact
     // scribbles.
     Ok(Some((stack_base, stack_start, stack_start)))
+}
+
+fn cmd_reg(_db: &debugdb::DebugDb, ctx: &mut Ctx, args: &str) {
+    let mut words = args.split_whitespace();
+    let Some(regnum_str) = words.next() else {
+        println!("missing required register number argument");
+        return;
+    };
+    let value_str = words.next();
+
+    let Ok(regnum) = parse_int::parse::<u16>(regnum_str) else {
+        println!("could not parse register: {regnum_str}");
+        return;
+    };
+
+    if let Some(value_str) = value_str {
+        let Ok(value) = parse_int::parse::<u64>(value_str) else {
+            println!("could not parse value: {value_str}");
+            return;
+        };
+        ctx.registers.insert(regnum, value);
+    } else {
+        if let Some(x) = ctx.register(regnum) {
+            println!("register {regnum} = {x:#x}");
+        } else {
+            println!("register {regnum} not present in machine state");
+        }
+    }
 }
