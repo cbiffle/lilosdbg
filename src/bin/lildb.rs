@@ -1819,13 +1819,17 @@ fn cmd_time(db: &debugdb::DebugDb, ctx: &mut Ctx, _args: &str) {
 
 fn cmd_tasks(db: &debugdb::DebugDb, ctx: &mut Ctx, args: &str) {
     let mut verbose = false;
+    let mut core = 0;
     for word in args.split_whitespace() {
         match word {
             "-v" => verbose = true,
-            _ => {
-                println!("usage: tasks {{-v}}");
-                return;
-            }
+            maybe_num => match maybe_num.parse() {
+                Ok(n) => core = n,
+                Err(_) => {
+                    println!("usage: tasks {{-v}} {{core, default is 0}}");
+                    return;
+                }
+            },
         }
     }
 
@@ -1864,8 +1868,8 @@ fn cmd_tasks(db: &debugdb::DebugDb, ctx: &mut Ctx, args: &str) {
             return;
         }
     };
-    let Value::Enum(val) = val else {
-        println!("{}", ansi_term::Colour::Red.paint("lilos::exec::TASK_FUTURES type has wrong shape"));
+    let Some(val) = load_task_future_multi_core(core, &val) else {
+        // Diagnostic message already printed
         return;
     };
     if val.disc != "Some" {
@@ -1990,6 +1994,35 @@ fn cmd_tasks(db: &debugdb::DebugDb, ctx: &mut Ctx, args: &str) {
         if verbose {
             println!("{}", bold.paint("full dump:"));
             println!("{}", ValueWithDb(outer, db));
+        }
+    }
+}
+
+fn load_task_future_multi_core(core: usize, val: &Value) -> Option<&value::Enum> {
+    match val {
+        Value::Array(vec) if core < vec.len() => load_task_future_single_core(&vec[core]),
+        Value::Array(vec) => {
+            println!(
+                "{} {} valid range [0, {})",
+                ansi_term::Colour::Red.paint("Invalid core"),
+                core,
+                vec.len()
+            );
+            None
+        }
+        _ => load_task_future_single_core(val),
+    }
+}
+
+fn load_task_future_single_core(val: &Value) -> Option<&value::Enum> {
+    match val {
+        Value::Enum(val) => Some(val),
+        _ => {
+            println!(
+                "{}",
+                ansi_term::Colour::Red.paint("lilos::exec::TASK_FUTURES type has wrong shape")
+            );
+            None
         }
     }
 }
