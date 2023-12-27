@@ -313,6 +313,7 @@ dependencies = [
  "indexmap 1.9.3",
  "object 0.26.2",
  "parse_int",
+ "portable-atomic",
  "rangemap",
  "regex",
  "rustyline",
@@ -571,6 +572,7 @@ dependencies = [
  "gimli 0.26.2",
  "object 0.26.2",
  "parse_int",
+ "portable-atomic",
  "rangemap",
  "regex",
  "rustyline",
@@ -708,6 +710,12 @@ name = "pkg-config"
 version = "0.3.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "26072860ba924cbfa98ea39c8c19b4dd6a4a25423dbdf219c1eca91aa0cf6964"
+
+[[package]]
+name = "portable-atomic"
+version = "1.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7170ef9988bc169ba16dd36a7fa041e5c4cbeb6a35b76d4c03daded371eae7c0"
 
 [[package]]
 name = "proc-macro2"

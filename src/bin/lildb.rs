@@ -2280,15 +2280,33 @@ fn get_time<M: Machine>(machine: &M, db: &DebugDb, time_vars: &TimeVars) -> Resu
     let low = {
         let tick = db.static_variable_by_id(time_vars.tick).unwrap();
         let tick_type = db.type_by_id(tick.type_id).unwrap();
-        let low = core::sync::atomic::AtomicU32::from_state(machine, tick.location, db, tick_type)?;
-        low.load(Ordering::Relaxed)
+        match tick_type.name(db).as_ref() {
+            "portable_atomic::AtomicU32" => {
+                portable_atomic::AtomicU32::from_state(machine, tick.location, db, tick_type)?
+                    .load(Ordering::Relaxed)
+            }
+            "core::sync::atomic::AtomicU32" => {
+                core::sync::atomic::AtomicU32::from_state(machine, tick.location, db, tick_type)?
+                    .load(Ordering::Relaxed)
+            }
+            _ => Err(LoadError::UnsupportedType)?,
+        }
     };
 
     let high = if let Some(epoch) = time_vars.epoch {
         let ep = db.static_variable_by_id(epoch).unwrap();
         let ep_type = db.type_by_id(ep.type_id).unwrap();
-        let high = core::sync::atomic::AtomicU32::from_state(machine, ep.location, db, ep_type)?;
-        high.load(Ordering::Relaxed)
+        match ep_type.name(db).as_ref() {
+            "portable_atomic::AtomicU32" => {
+                portable_atomic::AtomicU32::from_state(machine, ep.location, db, ep_type)?
+                    .load(Ordering::Relaxed)
+            }
+            "core::sync::atomic::AtomicU32" => {
+                core::sync::atomic::AtomicU32::from_state(machine, ep.location, db, ep_type)?
+                    .load(Ordering::Relaxed)
+            }
+            _ => Err(LoadError::UnsupportedType)?,
+        }
     } else {
         0
     };
