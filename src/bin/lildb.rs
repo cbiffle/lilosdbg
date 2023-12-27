@@ -1422,7 +1422,7 @@ fn cmd_decode_async(db: &debugdb::DebugDb, ctx: &mut Ctx, args: &str) {
                 return;
             }
         };
-        let parts = Regex::new(r#"^(.*)::\{async_(fn|block)_env#0\}(<.*)?$"#).unwrap();
+        let parts = Regex::new(r#"^(.*)::\{async_(fn|block)_env#\d+\}(<.*)?$"#).unwrap();
         let suspend_state = Regex::new(r#"::Suspend([0-9]+)$"#).unwrap();
         let mut first = true;
         let bold = ansi_term::Style::new().bold();
@@ -1685,7 +1685,7 @@ fn cmd_decode_async_blob(db: &debugdb::DebugDb, _ctx: &mut Ctx, args: &str) {
                 return;
             }
         };
-        let parts = Regex::new(r#"^(.*)::\{async_(fn|block)_env#0\}(<.*)?$"#).unwrap();
+        let parts = Regex::new(r#"^(.*)::\{async_(fn|block)_env#\d+\}(<.*)?$"#).unwrap();
         let suspend_state = Regex::new(r#"::Suspend([0-9]+)$"#).unwrap();
         let mut first = true;
         loop {
@@ -2033,7 +2033,7 @@ fn await_trace_frame<'v>(
     time: Option<u64>,
     value: &'v Value,
 ) -> Option<&'v Value> {
-    let parts = Regex::new(r#"^(.*)::\{async_(fn|block)_env#0\}(<.*)?$"#).unwrap();
+    let parts = Regex::new(r#"^(.*)::\{async_(fn|block)_env#\d+\}(<.*)?$"#).unwrap();
     let suspend_state = Regex::new(r#"::Suspend([0-9]+)$"#).unwrap();
     let bold = ansi_term::Style::new().bold();
 
