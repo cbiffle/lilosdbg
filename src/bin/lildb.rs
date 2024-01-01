@@ -1422,7 +1422,7 @@ fn cmd_decode_async(db: &debugdb::DebugDb, ctx: &mut Ctx, args: &str) {
                 return;
             }
         };
-        let parts = Regex::new(r#"^(.*)::\{async_(fn|block)_env#0\}(<.*)?$"#).unwrap();
+        let parts = Regex::new(r#"^(.*)::\{async_(fn|block)_env#\d+\}(<.*)?$"#).unwrap();
         let suspend_state = Regex::new(r#"::Suspend([0-9]+)$"#).unwrap();
         let mut first = true;
         let bold = ansi_term::Style::new().bold();
@@ -1685,7 +1685,7 @@ fn cmd_decode_async_blob(db: &debugdb::DebugDb, _ctx: &mut Ctx, args: &str) {
                 return;
             }
         };
-        let parts = Regex::new(r#"^(.*)::\{async_(fn|block)_env#0\}(<.*)?$"#).unwrap();
+        let parts = Regex::new(r#"^(.*)::\{async_(fn|block)_env#\d+\}(<.*)?$"#).unwrap();
         let suspend_state = Regex::new(r#"::Suspend([0-9]+)$"#).unwrap();
         let mut first = true;
         loop {
@@ -1819,13 +1819,17 @@ fn cmd_time(db: &debugdb::DebugDb, ctx: &mut Ctx, _args: &str) {
 
 fn cmd_tasks(db: &debugdb::DebugDb, ctx: &mut Ctx, args: &str) {
     let mut verbose = false;
+    let mut core = 0;
     for word in args.split_whitespace() {
         match word {
             "-v" => verbose = true,
-            _ => {
-                println!("usage: tasks {{-v}}");
-                return;
-            }
+            maybe_num => match maybe_num.parse() {
+                Ok(n) => core = n,
+                Err(_) => {
+                    println!("usage: tasks {{-v}} {{core, default is 0}}");
+                    return;
+                }
+            },
         }
     }
 
@@ -1864,8 +1868,8 @@ fn cmd_tasks(db: &debugdb::DebugDb, ctx: &mut Ctx, args: &str) {
             return;
         }
     };
-    let Value::Enum(val) = val else {
-        println!("{}", ansi_term::Colour::Red.paint("lilos::exec::TASK_FUTURES type has wrong shape"));
+    let Some(val) = load_task_future_multi_core(core, &val) else {
+        // Diagnostic message already printed
         return;
     };
     if val.disc != "Some" {
@@ -1994,13 +1998,42 @@ fn cmd_tasks(db: &debugdb::DebugDb, ctx: &mut Ctx, args: &str) {
     }
 }
 
+fn load_task_future_multi_core(core: usize, val: &Value) -> Option<&value::Enum> {
+    match val {
+        Value::Array(vec) if core < vec.len() => load_task_future_single_core(&vec[core]),
+        Value::Array(vec) => {
+            println!(
+                "{} {} valid range [0, {})",
+                ansi_term::Colour::Red.paint("Invalid core"),
+                core,
+                vec.len()
+            );
+            None
+        }
+        _ => load_task_future_single_core(val),
+    }
+}
+
+fn load_task_future_single_core(val: &Value) -> Option<&value::Enum> {
+    match val {
+        Value::Enum(val) => Some(val),
+        _ => {
+            println!(
+                "{}",
+                ansi_term::Colour::Red.paint("lilos::exec::TASK_FUTURES type has wrong shape")
+            );
+            None
+        }
+    }
+}
+
 fn await_trace_frame<'v>(
     ctx: &Ctx,
     db: &DebugDb,
     time: Option<u64>,
     value: &'v Value,
 ) -> Option<&'v Value> {
-    let parts = Regex::new(r#"^(.*)::\{async_(fn|block)_env#0\}(<.*)?$"#).unwrap();
+    let parts = Regex::new(r#"^(.*)::\{async_(fn|block)_env#\d+\}(<.*)?$"#).unwrap();
     let suspend_state = Regex::new(r#"::Suspend([0-9]+)$"#).unwrap();
     let bold = ansi_term::Style::new().bold();
 
@@ -2100,7 +2133,7 @@ fn await_trace_frame<'v>(
 
 
     match name {
-        "lilos::exec::sleep_until" => {
+        "lilos::exec::sleep_until" | "lilos::time::sleep_until" => {
             match get_async_fn_local(value, "deadline") {
                 Ok(Some(deadline)) => {
                     if let Some(t) = deadline.newtype("lilos::time::TickTime") {
@@ -2280,15 +2313,33 @@ fn get_time<M: Machine>(machine: &M, db: &DebugDb, time_vars: &TimeVars) -> Resu
     let low = {
         let tick = db.static_variable_by_id(time_vars.tick).unwrap();
         let tick_type = db.type_by_id(tick.type_id).unwrap();
-        let low = core::sync::atomic::AtomicU32::from_state(machine, tick.location, db, tick_type)?;
-        low.load(Ordering::Relaxed)
+        match tick_type.name(db).as_ref() {
+            "portable_atomic::AtomicU32" => {
+                portable_atomic::AtomicU32::from_state(machine, tick.location, db, tick_type)?
+                    .load(Ordering::Relaxed)
+            }
+            "core::sync::atomic::AtomicU32" => {
+                core::sync::atomic::AtomicU32::from_state(machine, tick.location, db, tick_type)?
+                    .load(Ordering::Relaxed)
+            }
+            _ => Err(LoadError::UnsupportedType)?,
+        }
     };
 
     let high = if let Some(epoch) = time_vars.epoch {
         let ep = db.static_variable_by_id(epoch).unwrap();
         let ep_type = db.type_by_id(ep.type_id).unwrap();
-        let high = core::sync::atomic::AtomicU32::from_state(machine, ep.location, db, ep_type)?;
-        high.load(Ordering::Relaxed)
+        match ep_type.name(db).as_ref() {
+            "portable_atomic::AtomicU32" => {
+                portable_atomic::AtomicU32::from_state(machine, ep.location, db, ep_type)?
+                    .load(Ordering::Relaxed)
+            }
+            "core::sync::atomic::AtomicU32" => {
+                core::sync::atomic::AtomicU32::from_state(machine, ep.location, db, ep_type)?
+                    .load(Ordering::Relaxed)
+            }
+            _ => Err(LoadError::UnsupportedType)?,
+        }
     } else {
         0
     };

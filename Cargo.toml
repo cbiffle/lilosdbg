@@ -13,6 +13,7 @@ debugdb = {git = "https://github.com/cbiffle/debugdb"}
 gimli = "0.26.1"
 object = "0.26"
 parse_int = "0.6.0"
+portable-atomic = "1.6.0"
 rangemap = "1.3.0"
 regex = "1.8.4"
 rustyline = "11.0.0"
