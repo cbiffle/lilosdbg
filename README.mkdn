@@ -9,6 +9,8 @@ fn`.
 
 This is built on top of my DWARF program analysis crate, [`debugdb`].
 
+**`lilosdbg` supports `lilos` 0.3.x and 1.0.0 at this time.**
+
 ## How to use it
 
 `lilosdbg` currently can't talk directly to your target over SWD, and instead
