@@ -1,3 +1,9 @@
+// I intend to switch these back to warnings once things are cleaner.
+#![allow(clippy::type_complexity)]
+#![allow(clippy::len_zero)]
+
+
+use std::cmp;
 use std::collections::BTreeMap;
 use std::io::Read;
 use std::sync::atomic::Ordering;
@@ -14,6 +20,9 @@ use debugdb::{Type, Encoding, TypeId, Struct, Member, DebugDb, Enum, VariantShap
 use debugdb::load::{Load, ImgMachine, Machine, LoadError};
 use regex::Regex;
 use ansi_term::Colour;
+
+static ASYNC_FN_BLOCK_ENV: &str =
+    r#"^(?<name>.*)::\{async_(fn|block)_env#(?<num>[0-9]+)\}(?<tmpl><.*)?$"#;
 
 #[derive(Debug, Parser)]
 struct Lildb {
@@ -320,7 +329,9 @@ fn simple_query_cmd(
         // Try parsing as a debug section reference.
         let rest = &type_name[8..];
         if rest.starts_with("info+0x") {
+            // TODO what was I doing here
         } else if rest.starts_with("types+0x") {
+            // TODO seriously though
         }
     }
 
@@ -411,7 +422,7 @@ fn cmd_info(db: &debugdb::DebugDb, _ctx: &mut Ctx, args: &str) {
                     println!("- no members");
                 }
 
-                struct_picture(db, s, db.pointer_size() as usize);
+                struct_picture(db, s, db.pointer_size());
             }
             Type::Enum(s) => {
                 println!("enum type");
@@ -479,7 +490,7 @@ fn cmd_info(db: &debugdb::DebugDb, _ctx: &mut Ctx, args: &str) {
                         }
                     }
                 }
-                enum_picture(db, s, db.pointer_size() as usize);
+                enum_picture(db, s, db.pointer_size());
             }
             Type::CEnum(s) => {
                 println!("C-like enum type");
@@ -771,8 +782,8 @@ fn cmd_def(db: &debugdb::DebugDb, _ctx: &mut Ctx, args: &str) {
 }
 
 fn cmd_addr2line(db: &debugdb::DebugDb, _ctx: &mut Ctx, args: &str) {
-    let addr = if args.starts_with("0x") {
-        if let Ok(a) = u64::from_str_radix(&args[2..], 16) {
+    let addr = if let Some(rest) = args.strip_prefix("0x") {
+        if let Ok(a) = u64::from_str_radix(rest, 16) {
             a
         } else {
             println!("can't parse {} as an address", args);
@@ -804,8 +815,8 @@ fn cmd_addr2line(db: &debugdb::DebugDb, _ctx: &mut Ctx, args: &str) {
 }
 
 fn cmd_addr2stack(db: &debugdb::DebugDb, _ctx: &mut Ctx, args: &str) {
-    let addr = if args.starts_with("0x") {
-        if let Ok(a) = u64::from_str_radix(&args[2..], 16) {
+    let addr = if let Some(rest) = args.strip_prefix("0x") {
+        if let Ok(a) = u64::from_str_radix(rest, 16) {
             a
         } else {
             println!("can't parse {} as an address", args);
@@ -861,14 +872,12 @@ fn cmd_addr2stack(db: &debugdb::DebugDb, _ctx: &mut Ctx, args: &str) {
 
 fn cmd_vars(db: &debugdb::DebugDb, _ctx: &mut Ctx, args: &str) {
     for (_id, v) in db.static_variables() {
-        if !args.is_empty() {
-            if !v.name.contains(args) {
-                continue;
-            }
+        if !args.is_empty() && !v.name.contains(args) {
+            continue;
         }
 
         println!("0x{:0width$x} {}: {}", v.location, v.name, NamedGoff(db, v.type_id),
-            width = db.pointer_size() as usize * 2);
+            width = db.pointer_size() * 2);
     }
 }
 
@@ -887,7 +896,7 @@ fn cmd_var(db: &debugdb::DebugDb, ctx: &mut Ctx, args: &str) {
         println!("- address: 0x{:x}", v.location);
         let Some(ty) = db.type_by_id(v.type_id) else { continue };
 
-        match Value::from_state(&ctx.segments, v.location, db, &ty) {
+        match Value::from_state(&ctx.segments, v.location, db, ty) {
             Ok(v) => {
                 println!("- current contents: {}",
                     ValueWithDb(v, db));
@@ -900,8 +909,8 @@ fn cmd_var(db: &debugdb::DebugDb, ctx: &mut Ctx, args: &str) {
 }
 
 fn cmd_addr(db: &debugdb::DebugDb, _ctx: &mut Ctx, args: &str) {
-    let addr = if args.starts_with("0x") {
-        if let Ok(a) = u64::from_str_radix(&args[2..], 16) {
+    let addr = if let Some(rest) = args.strip_prefix("0x") {
+        if let Ok(a) = u64::from_str_radix(rest, 16) {
             a
         } else {
             println!("can't parse {} as an address", args);
@@ -1033,8 +1042,8 @@ fn offset_to_path(
 }
 
 fn cmd_unwind(db: &debugdb::DebugDb, _ctx: &mut Ctx, args: &str) {
-    let addr = if args.starts_with("0x") {
-        if let Ok(a) = u64::from_str_radix(&args[2..], 16) {
+    let addr = if let Some(rest) = args.strip_prefix("0x") {
+        if let Ok(a) = u64::from_str_radix(rest, 16) {
             a
         } else {
             println!("can't parse {} as an address", args);
@@ -1269,12 +1278,10 @@ fn byte_picture(
                 }
                 if let Some(i) = &n {
                     print!("{:^6}", i);
+                } else if off < size {
+                    print!(" pad  ");
                 } else {
-                    if off < size {
-                        print!(" pad  ");
-                    } else {
-                        print!("      ");
-                    }
+                    print!("      ");
                 }
                 current = Some(n.clone());
             } else {
@@ -1422,7 +1429,7 @@ fn cmd_decode_async(db: &debugdb::DebugDb, ctx: &mut Ctx, args: &str) {
                 return;
             }
         };
-        let parts = Regex::new(r#"^(.*)::\{async_(fn|block)_env#0\}(<.*)?$"#).unwrap();
+        let parts = Regex::new(ASYNC_FN_BLOCK_ENV).unwrap();
         let suspend_state = Regex::new(r#"::Suspend([0-9]+)$"#).unwrap();
         let mut first = true;
         let bold = ansi_term::Style::new().bold();
@@ -1437,11 +1444,11 @@ fn cmd_decode_async(db: &debugdb::DebugDb, ctx: &mut Ctx, args: &str) {
                 break;
             };
             let Some(parts) = parts.captures(&e.name) else {
-                println!("(name is weird for an async fn env)");
+                println!("(name {} is weird for an async fn env)", e.name);
                 break;
             };
-            let name = &parts[1];
-            let parms = parts.get(3).map(|m| m.as_str()).unwrap_or("");
+            let name = &parts["name"];
+            let parms = parts.name("tmpl").map(|m| m.as_str()).unwrap_or("");
             println!("async fn {}{name}{parms}{}", bold.prefix(), bold.suffix());
             let state = &e.disc;
             let state_name = &e.value.name;
@@ -1685,7 +1692,7 @@ fn cmd_decode_async_blob(db: &debugdb::DebugDb, _ctx: &mut Ctx, args: &str) {
                 return;
             }
         };
-        let parts = Regex::new(r#"^(.*)::\{async_(fn|block)_env#0\}(<.*)?$"#).unwrap();
+        let parts = Regex::new(ASYNC_FN_BLOCK_ENV).unwrap();
         let suspend_state = Regex::new(r#"::Suspend([0-9]+)$"#).unwrap();
         let mut first = true;
         loop {
@@ -1699,11 +1706,11 @@ fn cmd_decode_async_blob(db: &debugdb::DebugDb, _ctx: &mut Ctx, args: &str) {
                 break;
             };
             let Some(parts) = parts.captures(&e.name) else {
-                println!("(name is weird for an async fn env)");
+                println!("(name {} is weird for an async fn env)", e.name);
                 break;
             };
-            let name = &parts[1];
-            let parms = parts.get(3).map(|m| m.as_str()).unwrap_or("");
+            let name = &parts["name"];
+            let parms = parts.name("tmpl").map(|m| m.as_str()).unwrap_or("");
             println!("async fn {name}{parms}");
             let state = &e.disc;
             let state_name = &e.value.name;
@@ -1857,7 +1864,7 @@ fn cmd_tasks(db: &debugdb::DebugDb, ctx: &mut Ctx, args: &str) {
         return;
     };
 
-    let val = match Value::from_state(&ctx.segments, futures.location, db, &ty) {
+    let val = match Value::from_state(&ctx.segments, futures.location, db, ty) {
         Ok(v) => v,
         Err(e) => {
             println!("{}{e}", ansi_term::Colour::Red.paint("can't load lilos::exec::TASK_FUTURES: "));
@@ -2000,7 +2007,7 @@ fn await_trace_frame<'v>(
     time: Option<u64>,
     value: &'v Value,
 ) -> Option<&'v Value> {
-    let parts = Regex::new(r#"^(.*)::\{async_(fn|block)_env#0\}(<.*)?$"#).unwrap();
+    let parts = Regex::new(ASYNC_FN_BLOCK_ENV).unwrap();
     let suspend_state = Regex::new(r#"::Suspend([0-9]+)$"#).unwrap();
     let bold = ansi_term::Style::new().bold();
 
@@ -2008,11 +2015,11 @@ fn await_trace_frame<'v>(
         return await_trace_handroll(ctx, db, time, value);
     };
     let Some(parts) = parts.captures(&e.name) else {
-        println!("(name is weird for an async fn env)");
+        println!("(name {} is weird for an async fn env)", e.name);
         return None;
     };
-    let name = &parts[1];
-    let parms = parts.get(3).map(|m| m.as_str()).unwrap_or("");
+    let name = &parts["name"];
+    let parms = parts.name("tmpl").map(|m| m.as_str()).unwrap_or("");
     println!("async fn {}{name}{parms}{}", bold.prefix(), bold.suffix());
     let state = &e.disc;
     let state_name = &e.value.name;
@@ -2100,23 +2107,27 @@ fn await_trace_frame<'v>(
 
 
     match name {
-        "lilos::exec::sleep_until" => {
+        "lilos::time::sleep_until" => {
             match get_async_fn_local(value, "deadline") {
                 Ok(Some(deadline)) => {
                     if let Some(t) = deadline.newtype("lilos::time::TickTime") {
                         if let Some(t) = t.u64_value() {
                             print!("    sleeping until: {}", t);
                             if let Some(time) = time {
-                                if time < t {
-                                    let n = t - time;
-                                    print!(" ({n} ms from now)");
-                                } else if time == t {
-                                    print!(" (now)");
-                                } else {
-                                    let n = time - t;
-                                    print!(" {}({n} ms ago!){}",
-                                    Colour::Red.prefix(),
-                                    Colour::Red.suffix());
+                                match time.cmp(&t) {
+                                    cmp::Ordering::Less => {
+                                        let n = t - time;
+                                        print!(" ({n} ms from now)");
+                                    }
+                                    cmp::Ordering::Equal => {
+                                        print!(" (now)");
+                                    }
+                                    cmp::Ordering::Greater => {
+                                        let n = time - t;
+                                        print!(" {}({n} ms ago!){}",
+                                            Colour::Red.prefix(),
+                                            Colour::Red.suffix());
+                                    }
                                 }
                             }
                             println!();
@@ -2246,7 +2257,7 @@ enum AsyncFnState {
 
 fn get_async_fn_local<'e>(env: &'e Value, name: &str) -> Result<Option<&'e Value>, LocalError> {
     let Value::Enum(env) = env else { return Err(LocalError::NotEnum) };
-    let parts = Regex::new(r#"^(.*)::\{async_fn_env#0\}(<.*)?$"#).unwrap();
+    let parts = Regex::new(ASYNC_FN_BLOCK_ENV).unwrap();
     let Some(_parts) = parts.captures(&env.name) else {
         return Err(LocalError::NotAnEnv);
     };
@@ -2463,21 +2474,20 @@ fn cmd_stacktrace(db: &debugdb::DebugDb, ctx: &mut Ctx, args: &str) {
             }
         };
 
-        let caller_cfa;
-        match unwind.cfa() {
+        let caller_cfa = match unwind.cfa() {
             gimli::CfaRule::RegisterAndOffset { register, offset } => {
                 let Some(regval) = ctx.register(register.0) else {
                     println!("register {} not found in machine state", register.0);
                     return;
                 };
-                caller_cfa = if *offset < 0 {
+                if *offset < 0 {
                     regval - (-*offset) as u64
                 } else {
                     regval + *offset as u64
-                };
+                }
             }
             other => panic!("unsupported CFA rule type: {:?}", other),
-        }
+        };
         let mut caller_regs: BTreeMap<u16, u64> = BTreeMap::new();
 
         // TODO ARM-specific
@@ -2569,11 +2579,9 @@ fn cmd_reg(_db: &debugdb::DebugDb, ctx: &mut Ctx, args: &str) {
             return;
         };
         ctx.registers.insert(regnum, value);
+    } else if let Some(x) = ctx.register(regnum) {
+        println!("register {regnum} = {x:#x}");
     } else {
-        if let Some(x) = ctx.register(regnum) {
-            println!("register {regnum} = {x:#x}");
-        } else {
-            println!("register {regnum} not present in machine state");
-        }
+        println!("register {regnum} not present in machine state");
     }
 }
