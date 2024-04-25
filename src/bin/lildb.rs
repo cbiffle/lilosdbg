@@ -2,6 +2,9 @@
 #![allow(clippy::type_complexity)]
 #![allow(clippy::len_zero)]
 
+// This one I may leave on -- I often use one-variant matches when I expect
+// extension in the future.
+#![allow(clippy::single_match)]
 
 use std::cmp;
 use std::collections::BTreeMap;
@@ -626,24 +629,22 @@ fn cmd_def(db: &debugdb::DebugDb, _ctx: &mut Ctx, args: &str) {
                 
                 if s.members.is_empty() {
                     println!(";");
-                } else {
-                    if s.tuple_like {
-                        println!("(");
-                        for mem in &s.members {
-                            println!("    {},", db.type_name(mem.type_id).unwrap());
-                        }
-                        println!(");");
-                    } else {
-                        println!(" {{");
-                        for mem in &s.members {
-                            if let Some(name) = &mem.name {
-                                println!("    {}: {},", name, db.type_name(mem.type_id).unwrap());
-                            } else {
-                                println!("    ANON: {},", db.type_name(mem.type_id).unwrap());
-                            }
-                        }
-                        println!("}}");
+                } else if s.tuple_like {
+                    println!("(");
+                    for mem in &s.members {
+                        println!("    {},", db.type_name(mem.type_id).unwrap());
                     }
+                    println!(");");
+                } else {
+                    println!(" {{");
+                    for mem in &s.members {
+                        if let Some(name) = &mem.name {
+                            println!("    {}: {},", name, db.type_name(mem.type_id).unwrap());
+                        } else {
+                            println!("    ANON: {},", db.type_name(mem.type_id).unwrap());
+                        }
+                    }
+                    println!("}}");
                 }
             }
             Type::Enum(s) => {
@@ -2227,33 +2228,30 @@ fn await_trace_handroll<'v>(
     match value {
         Value::Struct(s) => {
             if s.name.starts_with("lilos::exec::Until<") {
-                if let Some(notify) = s.unique_member_named("notify") {
-                    if let Value::Pointer(p) = notify {
-                        print!("{}notify ",
-                            bold.prefix());
+                if let Some(Value::Pointer(p)) = s.unique_member_named("notify") {
+                    print!("{}notify ", bold.prefix());
 
-                        let mut named = false;
-                        for ar in db.entities_by_address(p.value) {
-                            if ar.range.start == p.value {
-                                if let EntityId::Var(v) = ar.entity {
-                                    let v = db.static_variable_by_id(v).unwrap();
-                                    print!("{}", v.name);
-                                    named = true;
-                                    break;
-                                }
+                    let mut named = false;
+                    for ar in db.entities_by_address(p.value) {
+                        if ar.range.start == p.value {
+                            if let EntityId::Var(v) = ar.entity {
+                                let v = db.static_variable_by_id(v).unwrap();
+                                print!("{}", v.name);
+                                named = true;
+                                break;
                             }
                         }
-
-                        if !named {
-                            print!("at {:#x}", p.value);
-                        }
-                        println!("{}", bold.suffix());
-
-                        if let Some(cond) = s.unique_member_named("cond") {
-                            println!("    predicate: {}", cond.type_name());
-                        }
-                        return None;
                     }
+
+                    if !named {
+                        print!("at {:#x}", p.value);
+                    }
+                    println!("{}", bold.suffix());
+
+                    if let Some(cond) = s.unique_member_named("cond") {
+                        println!("    predicate: {}", cond.type_name());
+                    }
+                    return None;
                 }
             }
         }

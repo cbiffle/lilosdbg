@@ -19,7 +19,7 @@ fn main() -> Result<()> {
     let args = Snaptool::parse();
     match args.sub {
         Sub::List { path } => {
-            let file = std::fs::File::open(&path)?;
+            let file = std::fs::File::open(path)?;
             let snapshot = lilosdbg::load_snapshot(file)?;
 
             println!("snapshot format version: {}",
@@ -52,8 +52,8 @@ fn main() -> Result<()> {
                 size_width = size_width.max(decimal.len());
             }
             println!("Segments:");
-            println!("{:addr_width$}     {:addr_width$}  {:>size_width$}   {}",
-                "START", "END", "SIZE", "SOURCE");
+            println!("{:addr_width$}     {:addr_width$}  {:>size_width$}   SOURCE",
+                "START", "END", "SIZE");
             for (range, info) in snapshot.ranges() {
                 let base = range.start();
                 let end = range.end();

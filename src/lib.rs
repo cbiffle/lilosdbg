@@ -46,7 +46,7 @@ pub fn load_snapshot<F: Read + Seek>(
                         }
                     }
                 }
-            } else if root == "elf" && rest != "" {
+            } else if root == "elf" && !rest.is_empty() {
                 elf_files.push((i, name.to_string()));
             }
         } else if name == "registers.toml" {
