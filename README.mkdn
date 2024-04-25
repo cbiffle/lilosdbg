@@ -24,6 +24,12 @@ to adjust them):
 dump_image memory-image.bin 0x20000000 8192
 ```
 
+Alternatively, in GDB, the command would be
+
+```
+dump binary memory memory-image.bin 0x20000000 0x20002000
+```
+
 (If you don't have a `lilos` program, you can also test using the files in the
 `demo` directory. There's an ELF file and a saved memory snapshot from one of my
 programs.)
@@ -43,34 +49,28 @@ load memory-image.bin 0x20000000
 ```
 
 Then try asking about the status of your tasks by running `tasks`. Example
-output from one of my programs:
+output from the demo image in this repo:
 
 ```
-current tick-time is: 1585
+current tick-time is: 1620
 
 task 0:
 async fn keybad_fw::serial::task
-    suspended at await point 1
+    suspended at src/serial.rs:35
 waiting on: async fn lilos::spsc::{impl#4}::pop<keybad_fw::scanner::KeyEvent>
-    waiting for data in spsc queue at 0x20001cdc
-    queue type: lilos::spsc::Queue<keybad_fw::scanner::KeyEvent> <.debug_info+0x00013110>
+    suspended at /home/cbiffle/proj/lilos/os/src/spsc.rs:313
+    waiting for data in spsc queue at 0x20001d7c
+    queue type: lilos::spsc::Queue<keybad_fw::scanner::KeyEvent> <.debug_info+0x0000e5b4>
 
 task 1:
 async fn keybad_fw::scanner::task
-    suspended at await point 0
-waiting on: async fn lilos::exec::{impl#8}::next_time
-    suspended at await point 0
+    suspended at src/scanner.rs:134
+waiting on: async fn lilos::exec::{impl#6}::next_time
+    suspended at /home/cbiffle/proj/lilos/os/src/exec.rs:965
 waiting on: async fn lilos::exec::sleep_until
-    sleeping until: 1586 (1 ms from now)
-
-task 2:
-async fn keybad_fw::i2c::task
-    suspended at await point 0
-waiting on: notify keybad_fw::i2c::EVT
-    predicate: keybad_fw::i2c::task::{async_fn#0}::{closure_env#1}
+    suspended at /home/cbiffle/proj/lilos/os/src/exec.rs:815
+    sleeping until: 1621 (1 ms from now)
 ```
-
-Source file and line number information is next on my TODO list.
 
 [`lilos`]: https://github.com/cbiffle/lilos
 [`debugdb`]: https://github.com/cbiffle/debugdb
