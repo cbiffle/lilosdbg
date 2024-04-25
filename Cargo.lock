@@ -303,7 +303,7 @@ dependencies = [
 [[package]]
 name = "debugdb"
 version = "0.1.0"
-source = "git+https://github.com/cbiffle/debugdb#f4c362f97b962d7c43e3f8022230cea9e1a4ce3a"
+source = "git+https://github.com/cbiffle/debugdb#68c28e3465767f08be45ac6a7cf2146eefee74a6"
 dependencies = [
  "ansi_term",
  "anyhow",
