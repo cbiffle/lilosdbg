@@ -141,12 +141,16 @@ fn main() -> Result<()> {
                 println!("^C");
                 continue;
             }
+            Err(rustyline::error::ReadlineError::Eof) => {
+                break;
+            }
             Err(e) => {
                 println!("{:?}", e);
                 break;
             }
         }
     }
+    println!("exiting debugger.");
 
     Ok(())
 }
