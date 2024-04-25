@@ -2107,7 +2107,7 @@ fn await_trace_frame<'v>(
 
 
     match name {
-        "lilos::time::sleep_until" => {
+        "lilos::time::sleep_until" | "lilos::exec::sleep_until" => {
             match get_async_fn_local(value, "deadline") {
                 Ok(Some(deadline)) => {
                     if let Some(t) = deadline.newtype("lilos::time::TickTime") {
