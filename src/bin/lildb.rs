@@ -1241,13 +1241,29 @@ fn enum_picture(db: &DebugDb, s: &Enum, width: usize) {
     }
 }
 
+const fn corner(u: bool, d: bool, l: bool, r: bool) -> char {
+    static DIRS: [char; 16] = [
+        '·', '╶', '╴', '─',  // 0000, 0001, 0010, 0011
+        '╷', '┌', '┐', '┬',  // 0100, 0101, 0110, 0111
+        '╵', '└', '┘', '┴',  // 1000, 1001, 1010, 1011
+        '│', '├', '┤', '┼',  // 1100, 1101, 1110, 1111
+    ];
+    let idx = (u as usize) << 3 | (d as usize) << 2 | (l as usize) << 1 | r as usize;
+    DIRS[idx]
+}
+
 fn byte_picture(
     size: u64,
     width: usize,
     owner: impl Fn(u64) -> Option<String>,
 ) {
+    const S: char = ' ';
+    const H: char = corner(false, false, true, true);
+    const V: char = corner(true, true, false, false);
+    const UR: char = corner(true, false, false, true);
+
     let width = width as u64;
-    print!("      ");
+    print!("{S}{S}{S}{S}{S}{S}");
     for byte in 0..u64::min(size, width) {
         print!(" {byte:^6}");
     }
@@ -1257,24 +1273,25 @@ fn byte_picture(
     let mut current = None;
     let mut above = vec![None; width as usize];
     for word in 0..wordcount {
-        print!("     +");
+        print!("     {}", corner(word > 0, true, false, true));
         for byte in 0..width {
             let n = owner(word * width + byte);
+            let bw = byte == width - 1;
             if above[byte as usize] == Some(n) {
-                print!("      +");
+                print!("{S}{S}{S}{S}{S}{S}{}", corner(word > 0 && bw, bw, bw, false));
             } else {
-                print!("------+");
+                print!("{H}{H}{H}{H}{H}{H}{}", corner(word > 0, true, true, !bw));
             }
         }
         println!();
 
-        print!("{:04x} |", word * width);
+        print!("{:04x} {V}", word * width);
         for byte in 0..width {
             let off = word * width + byte;
             let n = owner(off);
             if Some(&n) != current.as_ref() {
                 if byte != 0 {
-                    print!("|");
+                    print!("{V}");
                 }
                 if let Some(i) = &n {
                     print!("{:^6}", i);
@@ -1293,7 +1310,7 @@ fn byte_picture(
 
             if byte == width - 1 {
                 if off < size {
-                    println!("|");
+                    println!("{V}");
                 } else {
                     println!();
                 }
@@ -1302,10 +1319,10 @@ fn byte_picture(
             above[byte as usize] = Some(n);
         }
     }
-    print!("     +");
+    print!("     {UR}");
     let final_bar = if size % width == 0 { width } else { size % width };
-    for _ in 0..final_bar {
-        print!("------+");
+    for idx in 0..final_bar {
+        print!("{H}{H}{H}{H}{H}{H}{}", corner(true, false, true, idx != final_bar - 1));
     }
     println!();
 }
