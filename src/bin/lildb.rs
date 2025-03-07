@@ -1934,8 +1934,8 @@ fn cmd_tasks(db: &debugdb::DebugDb, ctx: &mut Ctx, args: &str) {
                 return;
             }
         };
-        let Some(Value::Struct(fat_pointer)) = elt.any_member_named("pointer") else {
-            println!("Pin missing pointer member");
+        let Some(Value::Struct(fat_pointer)) = elt.any_member_named("pointer").or_else(|| elt.any_member_named("__pointer")) else {
+            println!("Pin missing pointer member elt={elt:#?}");
             return;
         };
         let Some(_dyn_caps) = dynptr.captures(&fat_pointer.name) else {
